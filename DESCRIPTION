@@ -24,11 +24,11 @@ Imports:
 	graphics,
 	gridExtra,
 	parallel,	
-	raster,
-	rgdal,
-	rgeos (>= 0.5-3),
-	sp (>= 1.4-2),	
+	raster (>= 3.6-0),
+	sf (>= 1.0-0),
+	sp (>= 2.0-0),	
 	tcltk,
+	terra (>= 1.7-0),
 	tidyverse,
 	utils
 RoxygenNote: 7.1.1
