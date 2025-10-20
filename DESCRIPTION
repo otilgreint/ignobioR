@@ -16,7 +16,6 @@ Imports:
 	doSNOW,
 	ellipsis (>= 0.3.2),
 	foreach,
-	gdalUtils,
 	ggplot2,
 	grDevices,
 	grid,
@@ -31,7 +30,7 @@ Imports:
 	terra (>= 1.7-0),
 	tidyverse,
 	utils
-RoxygenNote: 7.1.1
+RoxygenNote: 7.3.3
 Depends: 
     R (>= 3.2.0)
 Suggests: 
