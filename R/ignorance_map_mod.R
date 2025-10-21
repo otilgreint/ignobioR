@@ -108,9 +108,9 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   nrec <- nrow(pts_proj)
   spatial_count <- integer(nrec)
   for (i in seq_len(nrec)) {
-    single_buffer <- sf::st_as_sfc(buff_sfc[i])
+    single_buffer <- buff_sfc[[i]]  # extract the i-th geometry as a single sfc object
     # skip empty geometries
-    if (is.null(single_buffer) || length(single_buffer) == 0 || sf::st_is_empty(single_buffer)) {
+    if (is.null(single_buffer) || sf::st_is_empty(single_buffer)) {
       spatial_count[i] <- 0
       next
     }
