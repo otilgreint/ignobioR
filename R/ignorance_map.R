@@ -263,10 +263,28 @@ e <- raster::extent(site_3035)
 x_crop <- raster::extend(x_crop, raster::extent(e[1]-cellsize, e[2] + cellsize, e[3] - cellsize, e[4]+cellsize), value=raster::maxValue(raster_sum2))
 
 rgdal::writeOGR(site_3035, tempdir(), f <- basename(tempfile()), 'ESRI Shapefile')
-gdalUtils::gdal_rasterize(sprintf('%s/%s.shp', tempdir(), f),
-               f2 <- tempfile(fileext='.tif'), at=T,
-               tr=raster::res(x_crop), te=c(sp::bbox(x_crop)), burn=1,
-               init=0, a_nodata=0, ot='Byte')
+
+# REWRITE FUNCTION USING TERRA PACKAGE
+
+#gdalUtils::gdal_rasterize(sprintf('%s/%s.shp', tempdir(), f),
+#               f2 <- tempfile(fileext='.tif'), at=T,
+#               tr=raster::res(x_crop), te=c(sp::bbox(x_crop)), burn=1,
+#               init=0, a_nodata=0, ot='Byte')
+
+# Ensure input vector and raster are terra objects
+v <- terra::vect(site_3035)
+r <- terra::rast(x_crop)
+
+# Rasterize: set cells overlapping the vector to 1, all others to 0
+r_rast <- terra::rasterize(v, r, field = NULL, background = 0, touches = TRUE)
+r_rast[!is.na(r_rast)] <- 1
+
+# Optionally write to disk (if the rest of your function expects a file)
+f2 <- tempfile(fileext = ".tif")
+terra::writeRaster(r_rast, f2, overwrite = TRUE)
+
+
+# OLD CODE FROM NOW ON
 
 raster_new <- x_crop*raster::raster(f2)
 
@@ -301,7 +319,31 @@ p1 <- ggplot2::ggplot(test_df)+ggplot2::coord_equal()+ ggplot2::theme_classic()+
   ggplot2::ggtitle("Map of Relative Floristic Ignorance (MRFI)")
 
 # Plot n° 2
-x_crop_rich <- raster::extend(rich, raster_new, value=0)
+
+# REWRITE FUNCTION USING TERRA PACKAGE
+
+stop("clipRaster() requires gdalUtils; update needed.")
+#x_crop_rich <- raster::extend(rich, raster_new, value=0)
+
+
+# Ensure inputs are terra rasters
+r_rich <- terra::rast(rich)
+r_mask <- terra::rast(raster_new)
+
+# Crop to extent of raster_new
+r_clip <- terra::crop(r_rich, r_mask)
+
+# Mask values outside raster_new
+r_clip <- terra::mask(r_clip, r_mask)
+
+# Optional: extend with zeros if needed to match extent
+r_clip <- terra::extend(r_clip, r_mask, value = 0)
+
+
+# OLD CODE FROM NOW ON
+
+r_clip <- terra::crop(rich, raster_new)
+r_clip <- terra::mask(r_clip, raster_new)
 
 rgdal::writeOGR(site_3035, tempdir(), f <- basename(tempfile()), 'ESRI Shapefile')
 gdalUtils::gdal_rasterize(sprintf('%s/%s.shp', tempdir(), f),
