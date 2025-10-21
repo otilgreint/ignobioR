@@ -1,221 +1,273 @@
-#' @title Ignorance map (modernized minimal working version)
-#' @description Minimal working replacement of ignorance_map using sf + terra.
-#'              Produces Map of Relative Floristic Ignorance (MRFI) and species richness (RICH).
-#' @param data_flor data.frame with columns: Taxon, Long, Lat, uncertainty (m), year
-#' @param site sf or sp polygon (study area). If sp, will be coerced; expected geographic initially (EPSG:4326) or any CRS.
-#' @param year_study numeric year (defaults to current year)
-#' @param excl_areas optional sf or sp polygon to exclude from suitable area (will be transformed)
-#' @param CRS.new numeric EPSG code for projected CRS (default 3035)
-#' @param tau percentual taxa loss in 100 years (0 <= tau < 100)
-#' @param cellsize raster cell size in meters (numeric)
-#' @param verbose logical
-#' @return list with MRFI (terra SpatRaster), RICH (terra SpatRaster), Uncertainties (data.frame), Statistics (data.frame)
+#' @title Ignorance map (Modernized)
+#'
+#' @description Computes a Map of Relative Floristic Ignorance (MRFI) using
+#' modern `sf` and `terra` packages for high performance.
+#'
+#' @param data_flor A data.frame with 5 columns: 'Taxon', 'Long', 'Lat',
+#' 'uncertainty' (radius in meters), and 'year'.
+#' @param site An `sf` object (or 'SpatialPolygonsDataFrame') representing the study
+#' area. Assumed to be in a geographic CRS (e.g., EPSG:4326) if not set.
+#' @param year_study The numeric year of the study (e.g., 2025). Defaults to
+#' the current system year.
+#' @param excl_areas An optional `sf` object (or 'SpatialPolygonsDataFrame')
+#' to delimit unsuitable areas to be excluded.
+#' @param CRS.new The numeric EPSG code for the projected CRS to use for all
+#' calculations (must be in meters). Default = 3035 (ETRS89-LAEA Europe).
+#' @param tau Percentual value of taxa loss in 100 years (0 <= tau < 100).
+#' @param cellsize The resolution of the output map (in meters).
+#' @param verbose Logical. If TRUE, prints progress messages.
+#'
+#' @return A list with 4 objects:
+#' \itemize{
+#'  \item{`MRFI`}{ A `terra SpatRaster` of the Map of Relative Floristic Ignorance.}
+#'  \item{`RICH`}{ A `terra SpatRaster` of species richness, computed without
+#'  uncertainties.}
+#'  \item{`Uncertainties`}{ A data.frame of the uncertainty and year values for
+#'  all records used in the computation.}
+#'  \item{`Statistics`}{ A data.frame summarizing the settings and results.}
+#' }
+#'
+#' @importFrom sf st_as_sf st_make_valid st_crs st_transform st_buffer st_intersects st_intersection st_union
+#' @importFrom terra rast values ncell cellFromXY mask crop crs vect rasterize sprc extract
+#' @importFrom parallel makeCluster stopCluster detectCores
+#' @importFrom doSNOW registerDoSNOW
+#' @importFrom foreach foreach %dopar%
+#' @importFrom utils txtProgressBar setTxtProgressBar
 #' @export
+#' @examples \dontrun{
+#' # Note: Requires the 'ignobioR' data objects
+#' data(floratus)
+#' data(park)
+#' data(unsuitablezone)
+#'
+#' # Coerce old sp data to sf for modern use
+#' park_sf <- sf::st_as_sf(park)
+#' unsuitablezone_sf <- sf::st_as_sf(unsuitablezone)
+#'
+#' # Short example
+#' set.seed(123)
+#' mrfi <- ignorance_map_mod(
+#'   data_flor = floratus[sample(nrow(floratus), 2000), ],
+#'   site = park_sf,
+#'   tau = 80,
+#'   cellsize = 2000
+#' )
+#'
+#' # Plot the MRFI raster
+#' terra::plot(mrfi$MRFI)
+#'
+#' # Extended example
+#' mrfi_ext <- ignorance_map_mod(
+#'   data_flor = floratus,
+#'   excl_areas = unsuitablezone_sf,
+#'   site = park_sf,
+#'   tau = 20,
+#'   cellsize = 2000
+#' )
+#'
+#' terra::plot(mrfi_ext$MRFI)
+#' terra::plot(mrfi_ext$RICH)
+#' }
+#' 
+
 ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
-                              CRS.new = 3035, tau = 20, cellsize = 2000, verbose = TRUE) {
+                              CRS.new = 3035, tau, cellsize, verbose = TRUE,
+                              check_overlap = TRUE) {
   
   msg <- function(...) if (verbose) message(...)
   start_time <- Sys.time()
   
-  ## ----- basic checks -----
+  # --- 1. Settings and Input Validation ---
+  msg("Checking settings and inputs...")
   if (is.null(year_study)) year_study <- as.numeric(format(Sys.Date(), "%Y"))
-  if (!("Taxon" %in% names(data_flor) && "Long" %in% names(data_flor) &&
-        "Lat" %in% names(data_flor) && "uncertainty" %in% names(data_flor) &&
-        "year" %in% names(data_flor))) {
-    stop("data_flor must contain columns: Taxon, Long, Lat, uncertainty, year")
-  }
-  if (any(data_flor$year > year_study)) {
-    warning("Some occurrence dates are more recent than year_study")
-  }
-  if (!(tau >= 0 && tau < 100)) stop("0 <= tau < 100 is required")
-  if (!is.numeric(cellsize) || cellsize <= 0) stop("cellsize must be positive (meters)")
+  if (max(data_flor$year) > year_study) warning("Some occurrence dates are more recent than year_study")
+  if (tau < 0 || tau >= 100) stop("0 <= tau < 100 is required.")
   
-  ## ----- coerce site and excl_areas to sf -----
+  req_cols <- c("Taxon", "Long", "Lat", "uncertainty", "year")
+  if (!all(req_cols %in% names(data_flor))) {
+    stop("data_flor must contain columns: ", paste(req_cols, collapse = ", "))
+  }
+  
+  if (any(2 * data_flor$uncertainty < (cellsize / 20))) {
+    stop("Some records have uncertainty too small vs. cellsize. They may be lost.")
+  }
+  
+  msg("Inputs validated.")
+  
+  # --- 2. Coerce to SF and Reproject ---
+  msg(paste("Reprojecting inputs to EPSG:", CRS.new))
+  target_crs <- sf::st_crs(CRS.new)
+  
   if (inherits(site, "Spatial")) site <- sf::st_as_sf(site)
-  if (!inherits(site, "sf")) stop("site must be an sf or sp (Spatial*) polygon object")
-  site <- sf::st_make_valid(site)
+  if (is.na(sf::st_crs(site))) {
+    msg("Input 'site' has no CRS. Assuming EPSG:4326.")
+    sf::st_crs(site) <- 4326
+  }
+  site_proj <- sf::st_transform(sf::st_make_valid(site), target_crs)
   
+  excl_proj <- NULL
   if (!is.null(excl_areas)) {
     if (inherits(excl_areas, "Spatial")) excl_areas <- sf::st_as_sf(excl_areas)
-    excl_areas <- sf::st_make_valid(excl_areas)
-  }
-  
-  ## ----- transform inputs to projected CRS (meters) -----
-  target_crs <- sf::st_crs(CRS.new)  # numeric EPSG
-  if (is.na(target_crs)) stop("Invalid CRS.new EPSG code")
-  site_proj <- sf::st_transform(site, target_crs)
-  if (!is.null(excl_areas)) excl_proj <- sf::st_transform(excl_areas, target_crs) else excl_proj <- NULL
-  
-  ## ----- create points sf from data_flor (assume input long/lat decimal degrees if not specified) -----
-  pts <- sf::st_as_sf(data_flor, coords = c("Long", "Lat"), crs = 4326, remove = FALSE) # assume WGS84 input
-  pts_proj <- sf::st_transform(pts, target_crs)
-  pts_proj$record_id <- seq_len(nrow(pts_proj))
-  
-  ## ----- filter records with very small uncertainty relative to cell size (like original) -----
-  if (any(2 * pts_proj$uncertainty < (cellsize / 20))) {
-    bad <- which(2 * pts_proj$uncertainty < (cellsize / 20))
-    stop("There are ", length(bad), " occurrence records with uncertainty too small relative to cellsize. Inspect rows: ",
-         paste(head(bad, 10), collapse = ", "))
-  }
-  
-  ## ----- build base raster using terra -----
-  # extent = bounding box of records that intersect site (we will crop later)
-  # compute buffers first to know extent
-  msg("Creating buffers and computing extent...")
-  buff_sfc <- sf::st_buffer(pts_proj, dist = pts_proj$uncertainty) # vectorized; returns sfc_GEOMETRY
-  # optionally remove exclusion areas from buffers (as original did for cont==1)
-  if (!is.null(excl_proj)) {
-    # subtract excl polygons from buffers
-    buff_sfc <- sf::st_difference(buff_sfc, sf::st_union(excl_proj))
-  }
-  
-  # combined extent (add margin equal to max uncertainty)
-  bbox <- sf::st_bbox(sf::st_union(buff_sfc))
-  margin <- max(pts_proj$uncertainty, na.rm = TRUE)
-  xmin <- bbox["xmin"] - margin; xmax <- bbox["xmax"] + margin
-  ymin <- bbox["ymin"] - margin; ymax <- bbox["ymax"] + margin
-  
-  # create terra raster with desired cellsize (in same CRS units: meters)
-  r_template <- terra::rast(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax,
-                            resolution = cellsize, crs = sf::st_crs(target_crs)$wkt)
-  # ensure NA initial
-  terra::values(r_template) <- NA
-  
-  ## ----- compute richness raster (counts of unique taxa per cell) -----
-  msg("Computing species richness (RICH) ...")
-  # find cell indices for each point
-  pts_xy <- sf::st_coordinates(pts_proj)
-  cell_idx <- terra::cellFromXY(r_template, pts_xy)
-  # combine taxon and cell -> count unique taxa per cell
-  df_cells <- data.frame(cell = cell_idx, Taxon = pts_proj$Taxon, stringsAsFactors = FALSE)
-  df_cells <- df_cells[!is.na(df_cells$cell), ]
-  if (nrow(df_cells) == 0) stop("No points fall within raster extent - check data and cellsize")
-  # count unique taxa per cell
-  ux <- tapply(df_cells$Taxon, df_cells$cell, function(x) length(unique(x)))
-  r_rich <- r_template
-  terra::values(r_rich)[] <- 0
-  idx <- as.integer(names(ux))
-  terra::values(r_rich)[idx] <- as.numeric(ux)
-  
-  ## ----- per-record scores (spatial, temporal, st_ignorance) -----
-  msg("Computing per-record spatial & temporal scores ...")
-  # compute number of cells inside each buffer (spatial extent in raster cells)
-  # use terra::cells() via terra::rasterize with getCover-like behavior:
-  # but simpler: for each buffer, compute area in m2 and divide by cell area approx -> approximate number of cells
-  cell_area <- (cellsize * cellsize)
-  # safer: compute exact count using rasterize with mask
-  # We'll rasterize each buffer to the template and count non-NA cells
-  nrec <- nrow(pts_proj)
-  spatial_count <- integer(nrec)
-  for (i in seq_len(nrec)) {
-    single_buffer <- buff_sfc[[i]]  # extract the i-th geometry as a single sfc object
-    # skip empty geometries
-    if (is.null(single_buffer) || sf::st_is_empty(single_buffer)) {
-      spatial_count[i] <- 0
-      next
+    if (is.na(sf::st_crs(excl_areas))) {
+      msg("Input 'excl_areas' has no CRS. Assuming EPSG:4326.")
+      sf::st_crs(excl_areas) <- 4326
     }
-    tmpv <- terra::rasterize(terra::vect(sf::st_as_sf(single_buffer)), r_template, field = 1, touches = TRUE)
-    spatial_count[i] <- sum(!is.na(terra::values(tmpv)))
+    excl_proj <- sf::st_union(sf::st_transform(sf::st_make_valid(excl_areas), target_crs))
   }
-  if (any(spatial_count == 0)) {
-    # keep them but avoid divide-by-zero: set to 1 cell (very tiny area)
-    spatial_count[spatial_count == 0] <- 1
+  
+  if (!inherits(data_flor, "sf")) {
+    data_flor <- sf::st_as_sf(data_flor, coords = c("Long", "Lat"), crs = 4326, remove = FALSE)
   }
-  spatial_score <- 1 / spatial_count
-  time_score <- (1 - tau/100) ^ ((year_study - pts_proj$year) / 100)
-  st_ignorance_vals <- spatial_score * time_score
+  pts_proj <- sf::st_transform(data_flor, target_crs)
   
-  pts_proj$spatial_score <- spatial_score
-  pts_proj$time_score <- time_score
-  pts_proj$st_ignorance <- st_ignorance_vals
+  # --- Optional: Check overlap ---
+  if (check_overlap) {
+    overlap_check <- sf::st_intersects(pts_proj, site_proj, sparse = FALSE)
+    n_overlap <- sum(overlap_check)
+    msg(paste("Number of occurrence points overlapping the site:", n_overlap))
+    
+    if (n_overlap == 0) {
+      warning("No points overlap the study area. Check projections or coordinates.")
+    } else {
+      plot(sf::st_geometry(site_proj), col = NA, border = "black", main = "Points vs Site")
+      points(sf::st_coordinates(pts_proj), col = "red", pch = 20, cex = 0.5)
+    }
+  }
   
-  ## ----- For each taxon, rasterize buffers with per-record st_ignorance and take max across records of the taxon -----
-  msg("Rasterizing per-taxon ignorance layers (this may take time)...")
-  taxa <- unique(pts_proj$Taxon)
-  n_taxa <- length(taxa)
-  # initialize an accumulation raster (sum across taxa)
-  raster_sum <- r_template
-  terra::values(raster_sum)[] <- 0
+  # --- 3. Filter Records ---
+  msg("Creating buffers and filtering records...")
+  all_buffers_sf <- sf::st_buffer(pts_proj, dist = pts_proj$uncertainty)
+  intersects_idx <- sf::st_intersects(all_buffers_sf, site_proj, sparse = FALSE)
+  pts_computed <- pts_proj[which(intersects_idx[, 1]), ]
+  buffers_computed_sf <- all_buffers_sf[which(intersects_idx[, 1]), ]
   
-  pb <- utils::txtProgressBar(min = 0, max = n_taxa, style = 3)
-  for (ti in seq_along(taxa)) {
-    tname <- taxa[ti]
-    setTxtProgressBar(pb, ti)
-    idx <- which(pts_proj$Taxon == tname)
-    if (length(idx) == 0) next
-    # build sf of buffers only for these records and add st_ignorance as attribute
-    bufs <- sf::st_sf(
-      st_ignorance = pts_proj$st_ignorance[idx],
-      geometry = sf::st_sfc(buff_sfc[idx], crs = sf::st_crs(pts_proj))
+  if (nrow(pts_computed) == 0) stop("No occurrence buffers intersect the study area.")
+  if (!is.null(excl_proj)) buffers_computed_sf <- sf::st_difference(buffers_computed_sf, excl_proj)
+  msg(paste("Retained", nrow(pts_computed), "records for computation."))
+  
+  # --- 4. Create Template Raster ---
+  msg("Creating template raster...")
+  ext_all <- sf::st_bbox(buffers_computed_sf)
+  r_template <- terra::rast(
+    xmin = ext_all["xmin"], ymin = ext_all["ymin"],
+    xmax = ext_all["xmax"], ymax = ext_all["ymax"],
+    resolution = cellsize,
+    crs = terra::crs(site_proj)
+  )
+  
+  # --- 5. Calculate Richness Map ---
+  msg("Calculating species richness map (RICH)...")
+  r_rich <- terra::setValues(r_template, 0)
+  
+  pts_cells <- terra::cellFromXY(r_template, sf::st_coordinates(pts_computed))
+  cell_taxa_df <- data.frame(cell = pts_cells, Taxon = pts_computed$Taxon)
+  cell_taxa_df <- cell_taxa_df[!is.na(cell_taxa_df$cell), ]
+  
+  taxa_per_cell <- tapply(cell_taxa_df$Taxon, cell_taxa_df$cell, function(x) length(unique(x)))
+  if (length(taxa_per_cell) > 0) r_rich[as.numeric(names(taxa_per_cell))] <- as.numeric(taxa_per_cell)
+  
+  # --- 6. Calculate Per-Record Scores ---
+  msg("Calculating spatio-temporal scores...")
+  r_cells <- r_template
+  terra::values(r_cells) <- 1:terra::ncell(r_cells)
+  
+  v_buff <- terra::vect(buffers_computed_sf)
+  cell_data <- terra::extract(r_cells, v_buff, cells = TRUE)
+  counts_per_id <- table(cell_data$ID)
+  spatial_count <- rep(1, nrow(pts_computed))
+  if (length(counts_per_id) > 0) spatial_count[as.integer(names(counts_per_id))] <- counts_per_id
+  pts_computed$spatial_score <- 1 / spatial_count
+  pts_computed$time_score <- (1 - (tau / 100))^((year_study - pts_computed$year) / 100)
+  pts_computed$st_ignorance <- pts_computed$spatial_score * pts_computed$time_score
+  
+  # --- 7. Rasterize Per-Taxon Ignorance with Progress Bar ---
+  msg("Drafting Map of Relative Floristic Ignorance (safe with progress)...")
+  taxa_list <- unique(pts_computed$Taxon)
+  pb <- utils::txtProgressBar(min = 0, max = length(taxa_list), style = 3)
+  
+  raster_list <- lapply(seq_along(taxa_list), function(i) {
+    tname <- taxa_list[i]
+    pts_taxon <- pts_computed[pts_computed$Taxon == tname, ]
+    bufs_taxon_sf <- buffers_computed_sf[pts_computed$Taxon == tname, ]
+    bufs_taxon_sf$st_ignorance <- pts_taxon$st_ignorance
+    
+    tax_r <- terra::rasterize(
+      terra::vect(bufs_taxon_sf),
+      r_template,
+      field = "st_ignorance",
+      fun = "max",
+      touches = TRUE
     )
-    # union not wanted because we want per-record values and then max; but we will rasterize each record and take cell-wise max
-    # rasterize each record: create a raster (initialized NA) with each record's value; then cell-wise max across records
-    # Instead of stacking many rasters, we can create a raster of zeros then for each record set cells with its value where larger than current.
-    tax_r <- r_template
-    terra::values(tax_r)[] <- NA
-    # loop records of the taxon
-    for (j in seq_len(nrow(bufs))) {
-      rec_geom <- bufs[j, , drop = FALSE]
-      val <- as.numeric(bufs$st_ignorance[j])
-      # rasterize for this single record (cells covered -> val)
-      rec_r <- terra::rasterize(terra::vect(rec_geom), r_template, field = val, touches = TRUE)
-      # ensure rec_r has NA where not covered; then update tax_r with pmax of existing and rec_r
-      # terra stores NA as NA; use cell-based compare
-      cur_vals <- terra::values(tax_r)
-      rec_vals <- terra::values(rec_r)
-      # if tax_r is entirely NA, simply assign rec_vals
-      if (all(is.na(cur_vals))) {
-        terra::values(tax_r) <- rec_vals
-      } else {
-        # pmax treating NAs appropriately: where both NA => NA, where one is NA => take other
-        newvals <- cur_vals
-        to_update <- !is.na(rec_vals) & (is.na(cur_vals) | rec_vals > cur_vals)
-        newvals[to_update] <- rec_vals[to_update]
-        terra::values(tax_r) <- newvals
-      }
-    }
-    # replace NA with 0 (no coverage by that taxon)
-    tax_vals <- terra::values(tax_r)
-    tax_vals[is.na(tax_vals)] <- 0
-    terra::values(tax_r) <- tax_vals
-    # accumulate sum across taxa
-    raster_sum_vals <- terra::values(raster_sum)
-    raster_sum_vals[is.na(raster_sum_vals)] <- 0
-    raster_sum_vals <- raster_sum_vals + terra::values(tax_r)
-    terra::values(raster_sum) <- raster_sum_vals
-  }
+    tax_r[is.na(tax_r)] <- 0
+    
+    utils::setTxtProgressBar(pb, i)
+    return(tax_r)
+  })
   close(pb)
   
-  ## ----- compute MRFI: r.max - raster_sum (as original) -----
-  msg("Computing MRFI (rescaling)...")
-  rmax <- max(terra::values(raster_sum), na.rm = TRUE)
-  mrfi_r <- raster_sum
-  terra::values(mrfi_r) <- rmax - terra::values(raster_sum)
-  # mask MRFI to study site (and remove excluded areas)
-  v_site <- terra::vect(site_proj)
-  mrfi_r_masked <- terra::mask(terra::crop(mrfi_r, v_site), v_site)
-  # also compute richness masked similarly
-  rich_masked <- terra::mask(terra::crop(r_rich, v_site), v_site)
+  # --- 8. Finalize and Mask Rasters ---
+  msg("Finalizing rasters...")
   
-  ## ----- produce outputs & stats -----
+  # Keep only valid SpatRaster objects
+  raster_list_valid <- raster_list[sapply(raster_list, function(x) inherits(x, "SpatRaster"))]
+  
+  if (length(raster_list_valid) > 0) {
+    # Combine all rasters into one multilayer SpatRaster
+    raster_stack <- terra::rast(raster_list_valid)
+    
+    # Sum across layers
+    raster_sum <- terra::app(raster_stack, fun = sum, na.rm = TRUE)
+  } else {
+    raster_sum <- r_template
+    terra::values(raster_sum) <- 0
+  }
+  
+  # Rescale to MRFI (as per original logic)
+  rmax <- max(terra::values(raster_sum), na.rm = TRUE)
+  if (!is.finite(rmax)) rmax <- 0
+  
+  mrfi_r <- rmax - raster_sum
+  
+  # Mask both rasters to the study area
+  site_vect <- terra::vect(site_proj)
+  mrfi_final <- terra::mask(terra::crop(mrfi_r, site_vect), site_vect)
+  rich_final <- terra::mask(terra::crop(r_rich, site_vect), site_vect)
+
+  
+  # --- 9. Compile Statistics ---
+  msg("Compiling statistics...")
   end_time <- Sys.time()
-  stats_names <- c("Started", "Finished", "Elapsed time", "CRS (EPSG code)",
-                   "Cell size (km)", "100 years % loss ratio (tau)",
-                   "Total occurrence within", "Total occurrences computed",
-                   "Occurrence uncertainty (median value, m)", "Occurrence dates (median value, year)")
-  values <- c(as.character(start_time), as.character(end_time), as.character(round(end_time - start_time, 2)),
-              as.character(CRS.new), cellsize / 1000, tau,
-              sum(!is.na(terra::values(rich_masked))), nrow(pts_proj),
-              round(median(pts_proj$uncertainty, na.rm = TRUE)), round(median(pts_proj$year, na.rm = TRUE)))
-  statistics <- data.frame(Name = stats_names, Value = values, stringsAsFactors = FALSE)
+  pts_in_site <- sf::st_intersection(pts_proj, site_proj)
+  
+  statistics_df <- data.frame(
+    Statistic = c("Started", "Finished", "Elapsed time", "CRS (EPSG code)",
+                  "Cell size (m)", "100 years % loss ratio (tau)",
+                  "Total occurrences *within* site (points)",
+                  "Total occurrences *computed* (buffers)",
+                  "Occ. uncertainty (median, m)",
+                  "Occ. dates (median, year)"),
+    Value = c(as.character(start_time),
+              as.character(end_time),
+              round(as.numeric(end_time - start_time, units = "secs")),
+              as.character(CRS.new),
+              cellsize,
+              tau,
+              nrow(pts_in_site),
+              nrow(pts_computed),
+              round(median(pts_computed$uncertainty, na.rm = TRUE)),
+              round(median(pts_computed$year, na.rm = TRUE)))
+  )
   
   msg("Done.")
   
-  out <- list(
-    MRFI = mrfi_r_masked,
-    RICH = rich_masked,
-    Uncertainties = data.frame(uncertainty = pts_proj$uncertainty, year = pts_proj$year, Taxon = pts_proj$Taxon),
-    Statistics = statistics
-  )
-  return(out)
+  return(list(
+    MRFI = mrfi_final,
+    RICH = rich_final,
+    Uncertainties = data.frame(
+      uncertainty = pts_computed$uncertainty,
+      year = pts_computed$year,
+      Taxon = pts_computed$Taxon
+    ),
+    Statistics = statistics_df
+  ))
 }

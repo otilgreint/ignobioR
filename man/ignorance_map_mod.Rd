@@ -2,7 +2,7 @@
 % Please edit documentation in R/ignorance_map_mod.R
 \name{ignorance_map_mod}
 \alias{ignorance_map_mod}
-\title{Ignorance map (modernized minimal working version)}
+\title{Ignorance map (Modernized)}
 \usage{
 ignorance_map_mod(
   data_flor,
@@ -10,32 +10,83 @@ ignorance_map_mod(
   year_study = NULL,
   excl_areas = NULL,
   CRS.new = 3035,
-  tau = 20,
-  cellsize = 2000,
-  verbose = TRUE
+  tau,
+  cellsize,
+  verbose = TRUE,
+  check_overlap = TRUE
 )
 }
 \arguments{
-\item{data_flor}{data.frame with columns: Taxon, Long, Lat, uncertainty (m), year}
+\item{data_flor}{A data.frame with 5 columns: 'Taxon', 'Long', 'Lat',
+'uncertainty' (radius in meters), and 'year'.}
 
-\item{site}{sf or sp polygon (study area). If sp, will be coerced; expected geographic initially (EPSG:4326) or any CRS.}
+\item{site}{An `sf` object (or 'SpatialPolygonsDataFrame') representing the study
+area. Assumed to be in a geographic CRS (e.g., EPSG:4326) if not set.}
 
-\item{year_study}{numeric year (defaults to current year)}
+\item{year_study}{The numeric year of the study (e.g., 2025). Defaults to
+the current system year.}
 
-\item{excl_areas}{optional sf or sp polygon to exclude from suitable area (will be transformed)}
+\item{excl_areas}{An optional `sf` object (or 'SpatialPolygonsDataFrame')
+to delimit unsuitable areas to be excluded.}
 
-\item{CRS.new}{numeric EPSG code for projected CRS (default 3035)}
+\item{CRS.new}{The numeric EPSG code for the projected CRS to use for all
+calculations (must be in meters). Default = 3035 (ETRS89-LAEA Europe).}
 
-\item{tau}{percentual taxa loss in 100 years (0 <= tau < 100)}
+\item{tau}{Percentual value of taxa loss in 100 years (0 <= tau < 100).}
 
-\item{cellsize}{raster cell size in meters (numeric)}
+\item{cellsize}{The resolution of the output map (in meters).}
 
-\item{verbose}{logical}
+\item{verbose}{Logical. If TRUE, prints progress messages.}
 }
 \value{
-list with MRFI (terra SpatRaster), RICH (terra SpatRaster), Uncertainties (data.frame), Statistics (data.frame)
+A list with 4 objects:
+\itemize{
+ \item{`MRFI`}{ A `terra SpatRaster` of the Map of Relative Floristic Ignorance.}
+ \item{`RICH`}{ A `terra SpatRaster` of species richness, computed without
+ uncertainties.}
+ \item{`Uncertainties`}{ A data.frame of the uncertainty and year values for
+ all records used in the computation.}
+ \item{`Statistics`}{ A data.frame summarizing the settings and results.}
+}
 }
 \description{
-Minimal working replacement of ignorance_map using sf + terra.
-             Produces Map of Relative Floristic Ignorance (MRFI) and species richness (RICH).
+Computes a Map of Relative Floristic Ignorance (MRFI) using
+modern `sf` and `terra` packages for high performance.
+}
+\examples{
+\dontrun{
+# Note: Requires the 'ignobioR' data objects
+data(floratus)
+data(park)
+data(unsuitablezone)
+
+# Coerce old sp data to sf for modern use
+park_sf <- sf::st_as_sf(park)
+unsuitablezone_sf <- sf::st_as_sf(unsuitablezone)
+
+# Short example
+set.seed(123)
+mrfi <- ignorance_map_mod(
+  data_flor = floratus[sample(nrow(floratus), 2000), ],
+  site = park_sf,
+  tau = 80,
+  cellsize = 2000
+)
+
+# Plot the MRFI raster
+terra::plot(mrfi$MRFI)
+
+# Extended example
+mrfi_ext <- ignorance_map_mod(
+  data_flor = floratus,
+  excl_areas = unsuitablezone_sf,
+  site = park_sf,
+  tau = 20,
+  cellsize = 2000
+)
+
+terra::plot(mrfi_ext$MRFI)
+terra::plot(mrfi_ext$RICH)
+}
+
 }
