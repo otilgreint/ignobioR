@@ -41,7 +41,7 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   }
   
   ## ----- transform inputs to projected CRS (meters) -----
-  target_crs <- sf::st_crs(as.integer(CRS.new))
+  target_crs <- sf::st_crs(CRS.new)  # numeric EPSG
   if (is.na(target_crs)) stop("Invalid CRS.new EPSG code")
   site_proj <- sf::st_transform(site, target_crs)
   if (!is.null(excl_areas)) excl_proj <- sf::st_transform(excl_areas, target_crs) else excl_proj <- NULL
@@ -144,7 +144,7 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     idx <- which(pts_proj$Taxon == tname)
     if (length(idx) == 0) next
     # build sf of buffers only for these records and add st_ignorance as attribute
-    bufs <- sf::st_as_sf(data.frame(st_ignorance = pts_proj$st_ignorance[idx]), geometry = buff_sfc[idx])
+    bufs <- sf::st_sf(st_ignorance = pts_proj$st_ignorance[idx], geometry = sf::st_sfc(buff_sfc[idx]))
     # union not wanted because we want per-record values and then max; but we will rasterize each record and take cell-wise max
     # rasterize each record: create a raster (initialized NA) with each record's value; then cell-wise max across records
     # Instead of stacking many rasters, we can create a raster of zeros then for each record set cells with its value where larger than current.
