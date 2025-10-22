@@ -147,13 +147,14 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   
   # --- 4. Create Template Raster ---
   msg("Creating template raster...")
-  ext_all <- sf::st_bbox(buffers_computed_sf)
+  
+  combined_ext <- terra::ext(site_proj) + terra::ext(pts_computed)
   r_template <- terra::rast(
-    xmin = ext_all["xmin"], ymin = ext_all["ymin"],
-    xmax = ext_all["xmax"], ymax = ext_all["ymax"],
+    extent = combined_ext,
     resolution = cellsize,
-    crs = terra::crs(site_proj)
+    crs = target_crs # The CRS derived earlier
   )
+  terra::values(r_template) <- NA
   
   # --- 5. Calculate Richness Map ---
   msg("Calculating species richness map (RICH)...")
@@ -205,10 +206,10 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   })
   close(pb)
   
-  # --- 8. Finalize and Mask Rasters ---
+  # --- 8. Finalize and Mask Rasters (UPDATED to Avoid NA Fill) ---
   msg("Finalizing rasters...")
   
-  # Keep only valid SpatRaster objects
+  # 1. Keep only valid SpatRaster objects (as before)
   raster_list_valid <- raster_list[sapply(raster_list, function(x) inherits(x, "SpatRaster"))]
   
   if (length(raster_list_valid) > 0) {
@@ -222,41 +223,77 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     terra::values(raster_sum) <- 0
   }
   
-  # Rescale to MRFI (as per original logic)
+  # 2. Rescale to MRFI
   rmax <- max(terra::values(raster_sum), na.rm = TRUE)
   if (!is.finite(rmax)) rmax <- 0
+  mrfi_r <- rmax - raster_sum # This is the un-masked MRFI map
   
-  mrfi_r <- rmax - raster_sum
-  
-  # Mask both rasters to the study area
+  # 3. Create the site vector and a template for the site's bounding box
   site_vect <- terra::vect(site_proj)
+  site_ext <- terra::ext(site_proj)
+  site_box_template <- terra::rast(
+    extent = site_ext,
+    resolution = cellsize,
+    crs = target_crs 
+  )
+  
+  # 4. Mask to the actual study polygon (sets cells outside the polygon to NA)
+  mrfi_masked <- terra::mask(mrfi_r, site_vect)
+  rich_masked <- terra::mask(r_rich, site_vect)
+  
+  # 5. Fill cells *inside* the park boundary with zero for RICH if no data exists
+  rich_masked <- terra::classify(rich_masked, cbind(NA, 0), others=TRUE)
+  
+  # 6. Final Step: Trim the Raster
+  # The trim function cuts off rows and columns that are entirely NA.
   mrfi_final <- terra::mask(terra::crop(mrfi_r, site_vect), site_vect)
   rich_final <- terra::mask(terra::crop(r_rich, site_vect), site_vect)
-
   
   # --- 9. Compile Statistics ---
   msg("Compiling statistics...")
   end_time <- Sys.time()
+  
+  # 1. Ensure pts_in_site is calculated (needed for the original statistics)
   pts_in_site <- sf::st_intersection(pts_proj, site_proj)
   
+  # 2. CALCULATE EXCLUDED RECORDS
+  # total_initial_records must be available from the function start (e.g., nrow(data_flor))
+  total_initial_records <- nrow(data_flor) 
+  total_used_records <- nrow(pts_computed) # Final points used for MRFI calc
+  excluded_records_count <- total_initial_records - total_used_records
+  
+  # 3. COMPILE FINAL DATA FRAME (retaining original structure)
   statistics_df <- data.frame(
-    Statistic = c("Started", "Finished", "Elapsed time", "CRS (EPSG code)",
-                  "Cell size (m)", "100 years % loss ratio (tau)",
-                  "Total occurrences *within* site (points)",
-                  "Total occurrences *computed* (buffers)",
-                  "Occ. uncertainty (median, m)",
-                  "Occ. dates (median, year)"),
-    Value = c(as.character(start_time),
-              as.character(end_time),
-              round(as.numeric(end_time - start_time, units = "secs")),
-              as.character(CRS.new),
-              cellsize,
-              tau,
-              nrow(pts_in_site),
-              nrow(pts_computed),
-              round(median(pts_computed$uncertainty, na.rm = TRUE)),
-              round(median(pts_computed$year, na.rm = TRUE)))
+    Statistic = c(
+      "Started", 
+      "Finished", 
+      "Elapsed time (secs)", 
+      "CRS (EPSG code)",
+      "Cell size (m)", 
+      "100 years % loss ratio (tau)",
+      "Total initial records",
+      "Total occurrences within site (points)",
+      "Total occurrences computed (buffers)",
+      "Records excluded from analysis",
+      "Occ. uncertainty (median, m)",
+      "Occ. dates (median, year)"
+    ),
+    Value = c(
+      as.character(start_time),
+      as.character(end_time),
+      round(as.numeric(end_time - start_time, units = "secs")),
+      as.character(CRS.new),
+      cellsize,
+      tau,
+      total_initial_records,
+      nrow(pts_in_site),
+      nrow(pts_computed),
+      excluded_records_count,
+      round(median(pts_computed$uncertainty, na.rm = TRUE)),
+      round(median(pts_computed$year, na.rm = TRUE))
+    )
   )
+  
   
   # --- 10. Plotting and Output Generation ---
   msg("Generating plots and output files...")
@@ -274,6 +311,13 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   # Uses the modern st_as_sf and ggplot2::fortify equivalent
   tip1 <- site_proj
   
+  mrfi_max_val <- terra::global(mrfi_final, "max", na.rm = TRUE)$max
+  rich_max_val <- terra::global(rich_final, "max", na.rm = TRUE)$max
+  
+  # Create a sequence of 5 breaks for cleaner legend display
+  mrfi_breaks <- seq(0, mrfi_max_val, length.out = 12)
+  rich_breaks <- seq(0, rich_max_val, length.out = 12)
+  
   # --- Plot n° 1: MRFI ---
   p1 <- ggplot2::ggplot(test_spdf) +
     ggplot2::coord_equal() + ggplot2::theme_classic() +
@@ -282,24 +326,32 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     ggplot2::xlab("Longitude") + ggplot2::ylab("Latitude") +
     ggplot2::scale_fill_distiller(
       palette = "Spectral", direction = -1, guide = ggplot2::guide_legend(),
-      limits = c(0, terra::global(mrfi_final, "max", na.rm = TRUE)$max)
+      limits = c(0, mrfi_max_val),
+      breaks = mrfi_breaks,
+      labels = round(mrfi_breaks, 0) 
     ) +
-    ggplot2::geom_tile(mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value), alpha = 0.8) +
+    ggplot2::geom_tile(mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value), alpha = 0.8, colour = "black", linewidth = 0.1) +
     # Use sf::st_geometry to plot the outline cleanly
     ggplot2::geom_sf(data = tip1, fill = NA, color = "black", size = 1, inherit.aes = FALSE) +
     ggplot2::ggtitle("Map of Relative Floristic Ignorance (MRFI)")
   
-  # --- Plot n° 2: Species Richness ---
-  p2 <- ggplot2::ggplot(test_spdf2) + ggplot2::coord_equal() + ggplot2::theme_classic() +
+  # --- Plot n° 2: Species Richness (FIXED) ---
+  p2 <- ggplot2::ggplot(test_spdf2) + 
+    ggplot2::coord_equal() + 
+    ggplot2::theme_classic() +
     ggplot2::theme(legend.position = "right", legend.direction = 'vertical', legend.key.width = grid::unit(0.6, "cm")) +
-    ggplot2::geom_tile(mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value), alpha = 0.8) +
+    ggplot2::geom_tile(mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value), 
+                       alpha = 0.8, colour = "black", linewidth = 0.1) +
     ggplot2::geom_sf(data = tip1, fill = NA, color = "black", size = 1, inherit.aes = FALSE) +
     ggplot2::scale_fill_distiller(
-      palette = "Spectral", direction = +1, guide = ggplot2::guide_legend(),
-      limits = c(0, terra::global(rich_final, "max", na.rm = TRUE)$max)
+      palette = "Spectral", direction = +1, guide = ggplot2::guide_legend(title = "Value"),
+      limits = c(0, rich_max_val),
+      breaks = rich_breaks,
+      labels = round(rich_breaks, 0) 
     ) +
     ggplot2::ggtitle("Species richness map (without uncertainties)") +
-    ggplot2::xlab("Longitude") + ggplot2::ylab("Latitude") +
+    ggplot2::xlab("Longitude") + 
+    ggplot2::ylab("Latitude") +
     ggplot2::guides(fill = ggplot2::guide_legend(title = "Value"))
   
   # --- Plot n° 3: Temporal Uncertainty (Year) ---
