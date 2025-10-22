@@ -258,7 +258,92 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
               round(median(pts_computed$year, na.rm = TRUE)))
   )
   
-  msg("Done.")
+  # --- 10. Plotting and Output Generation ---
+  msg("Generating plots and output files...")
+  
+  # --- Prepare Data for ggplot ---
+  # 1. MRFI Raster to DF
+  test_spdf <- as.data.frame(mrfi_final, xy = TRUE)
+  colnames(test_spdf) <- c("x", "y", "value")
+  
+  # 2. RICH Raster to DF
+  test_spdf2 <- as.data.frame(rich_final, xy = TRUE)
+  colnames(test_spdf2) <- c("x", "y", "value")
+  
+  # 3. Site Polygon for ggplot (sf to data.frame)
+  # Uses the modern st_as_sf and ggplot2::fortify equivalent
+  tip1 <- site_proj
+  
+  # --- Plot n° 1: MRFI ---
+  p1 <- ggplot2::ggplot(test_spdf) +
+    ggplot2::coord_equal() + ggplot2::theme_classic() +
+    ggplot2::labs(fill = "IFI") +
+    ggplot2::theme(legend.position = "right", legend.direction = 'vertical', legend.key.width = grid::unit(0.6, "cm")) +
+    ggplot2::xlab("Longitude") + ggplot2::ylab("Latitude") +
+    ggplot2::scale_fill_distiller(
+      palette = "Spectral", direction = -1, guide = ggplot2::guide_legend(),
+      limits = c(0, terra::global(mrfi_final, "max", na.rm = TRUE)$max)
+    ) +
+    ggplot2::geom_tile(mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value), alpha = 0.8) +
+    # Use sf::st_geometry to plot the outline cleanly
+    ggplot2::geom_sf(data = tip1, fill = NA, color = "black", size = 1, inherit.aes = FALSE) +
+    ggplot2::ggtitle("Map of Relative Floristic Ignorance (MRFI)")
+  
+  # --- Plot n° 2: Species Richness ---
+  p2 <- ggplot2::ggplot(test_spdf2) + ggplot2::coord_equal() + ggplot2::theme_classic() +
+    ggplot2::theme(legend.position = "right", legend.direction = 'vertical', legend.key.width = grid::unit(0.6, "cm")) +
+    ggplot2::geom_tile(mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value), alpha = 0.8) +
+    ggplot2::geom_sf(data = tip1, fill = NA, color = "black", size = 1, inherit.aes = FALSE) +
+    ggplot2::scale_fill_distiller(
+      palette = "Spectral", direction = +1, guide = ggplot2::guide_legend(),
+      limits = c(0, terra::global(rich_final, "max", na.rm = TRUE)$max)
+    ) +
+    ggplot2::ggtitle("Species richness map (without uncertainties)") +
+    ggplot2::xlab("Longitude") + ggplot2::ylab("Latitude") +
+    ggplot2::guides(fill = ggplot2::guide_legend(title = "Value"))
+  
+  # --- Plot n° 3: Temporal Uncertainty (Year) ---
+  p3 <- ggplot2::ggplot(pts_computed) +
+    ggplot2::aes(x = .data$year, y = ggplot2::after_stat(density)) +
+    ggplot2::geom_histogram(alpha = 0.6, fill = "#FF6666", binwidth = diff(range(pts_computed$year)) / 30) +
+    ggplot2::coord_cartesian(xlim = c(min(pts_computed$year), year_study)) +
+    ggplot2::scale_y_continuous(labels = function(x) paste0(x * 100, "%")) +
+    ggplot2::ggtitle("Occurrence date") +
+    ggplot2::xlab("Year") + ggplot2::ylab("Frequency") +
+    ggplot2::theme_classic()
+  
+  # --- Plot n° 4: Spatial Uncertainty (Uncertainty) ---
+  p4 <- ggplot2::ggplot(pts_computed) +
+    ggplot2::aes(x = .data$uncertainty, y = ggplot2::after_stat(density)) +
+    ggplot2::geom_histogram(alpha = 0.6, fill = "#FF6666", binwidth = diff(range(pts_computed$uncertainty)) / 30) +
+    ggplot2::coord_cartesian(xlim = c(min(pts_computed$uncertainty), max(pts_computed$uncertainty))) +
+    ggplot2::scale_y_continuous(labels = function(x) paste0(x * 100, "%")) +
+    ggplot2::ggtitle("Occurrence spatial uncertainty") +
+    ggplot2::xlab("Uncertainty (m)") + ggplot2::ylab("Frequency") +
+    ggplot2::theme_classic()
+  
+  # --- PDF Output ---
+  grDevices::pdf("Ignorance_output.pdf", onefile = TRUE)
+  print(p1)
+  print(p2)
+  print(p3)
+  print(p4)
+  grid::grid.draw(gridExtra::grid.arrange(top = "Summary statistics", gridExtra::tableGrob(statistics_df)))
+  grDevices::dev.off()
+  
+  # --- File Output ---
+  terra::writeRaster(mrfi_final, filename = "MAPignorance.tif", overwrite = TRUE)
+  utils::write.csv(taxa_list, row.names = FALSE, "Taxa considered to compute the Map of Relative Floristic Ignorance (MRFI).csv")
+  msg(paste0("Done! The files have been saved here: ", getwd()))
+  
+  # --- Print Plots to Console ---
+  print(p1)
+  print(p2)
+  print(p3)
+  print(p4)
+  grid::grid.draw(gridExtra::grid.arrange(top = "Summary statistics", gridExtra::tableGrob(statistics_df)))
+  
+  # --- Return List (Section 11) ---
   
   return(list(
     MRFI = mrfi_final,
@@ -270,4 +355,6 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     ),
     Statistics = statistics_df
   ))
+  
+  msg("Done.")
 }
