@@ -366,10 +366,23 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   if (!is.finite(rmax)) rmax <- 0
   mrfi_r <- rmax - raster_sum
   
-  # Crop and mask both rasters to ORIGINAL site boundary
-  # This removes the buffer zone and returns data only for the actual study area
-  mrfi_final <- terra::mask(terra::crop(mrfi_r, site_vect_original), site_vect_original)
-  rich_final <- terra::mask(terra::crop(r_rich, site_vect_original), site_vect_original)
+  # Mask rasters using a site mask with touches = TRUE (Option A) ---
+  msg("Applying mask: keeping all cells touched by site polygon...")
+  
+  # Create a mask raster from the site polygon: cells touched by site polygon are set to 1
+  site_mask_r <- terra::rasterize(
+    site_vect_original,
+    r_template,
+    field = 1,
+    touches = TRUE
+  )
+  
+  # Convert zeros to NA so only intersecting cells are retained
+  site_mask_r[site_mask_r == 0] <- NA
+  
+  # Apply mask (crop first for performance)
+  mrfi_final <- terra::mask(terra::crop(mrfi_r, site_mask_r), site_mask_r)
+  rich_final <- terra::mask(terra::crop(r_rich, site_mask_r), site_mask_r)
   
   # --- 10. Compile Statistics ---
   msg("Compiling statistics...")
