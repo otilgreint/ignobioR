@@ -1,18 +1,9 @@
+# R/utils_input.R
+
 #' Standardize point inputs
 #' @noRd
 #' @keywords internal
-
-
-source("R/utils_input.R")
-
-pts_sf <- standardize_points(data_flor, verbose = TRUE)
-site_sf <- standardize_polygon(site, name = "site", verbose = TRUE)
-excl_sf <- standardize_polygon(excl_areas, name = "excl_areas", verbose = TRUE)
-
-# utils_input.R
-
-# Standardize point data (data_flor) to sf
-standardize_points <- function(data_flor, coords = c("Long", "Lat"), assumed_crs = 4326, verbose = TRUE) {
+.standardize_points <- function(data_flor, coords = c("Long", "Lat"), assumed_crs = 4326, verbose = TRUE) {
   msg <- function(...) if (verbose) message(...)
   msg("Standardizing point input (data_flor)...")
   
@@ -24,6 +15,7 @@ standardize_points <- function(data_flor, coords = c("Long", "Lat"), assumed_crs
   if (inherits(data_flor, "Spatial")) {
     msg(" - converting from sp to sf")
     sf_obj <- sf::st_as_sf(data_flor)
+    # Ensure CRS is set if conversion lost it or if it was missing
     if (is.na(sf::st_crs(sf_obj))) sf::st_crs(sf_obj) <- assumed_crs
     return(sf_obj)
   }
@@ -33,6 +25,7 @@ standardize_points <- function(data_flor, coords = c("Long", "Lat"), assumed_crs
       stop("data_flor is a data.frame but missing coordinate columns: ", paste(coords, collapse = ", "))
     }
     msg(" - converting from data.frame to sf using coords: ", paste(coords, collapse = ", "))
+    # The remove = FALSE argument keeps the original columns in the output data frame
     sf_obj <- sf::st_as_sf(data_flor, coords = coords, crs = assumed_crs, remove = FALSE)
     return(sf_obj)
   }
@@ -40,8 +33,11 @@ standardize_points <- function(data_flor, coords = c("Long", "Lat"), assumed_crs
   stop("Unsupported data_flor type. Provide an sf, Spatial* or data.frame.")
 }
 
-# Standardize polygon inputs (site, excl_areas)
-standardize_polygon <- function(x, name = "polygon", target_crs = 4326, verbose = TRUE) {
+
+#' Standardize polygon inputs
+#' @noRd
+#' @keywords internal
+.standardize_polygon <- function(x, name = "polygon", target_crs = 4326, verbose = TRUE) {
   msg <- function(...) if (verbose) message(...)
   if (is.null(x)) {
     msg(name, ": input is NULL -> returning NULL")
@@ -58,9 +54,17 @@ standardize_polygon <- function(x, name = "polygon", target_crs = 4326, verbose 
     stop(name, " must be an sf or Spatial object (or NULL).")
   }
   
+  # Ensure CRS is set if missing
   if (is.na(sf::st_crs(poly_sf))) {
     msg(" - no CRS found for ", name, "; assuming EPSG:", target_crs)
     sf::st_crs(poly_sf) <- target_crs
+  }
+  
+  # Reproject to target_crs if current CRS is different
+  current_crs <- sf::st_crs(poly_sf)
+  if (current_crs != sf::st_crs(target_crs)) {
+    msg(" - reprojecting ", name, " to target CRS (EPSG:", target_crs, ")")
+    poly_sf <- sf::st_transform(poly_sf, target_crs)
   }
   
   # Validate geometries
