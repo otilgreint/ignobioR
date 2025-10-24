@@ -173,9 +173,24 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     excl_proj <- sf::st_union(sf::st_transform(sf::st_make_valid(excl_areas), crs_sf))
   }
   
-  # Convert occurrence points to sf if not already
-  if (!inherits(data_flor, "sf")) {
-    data_flor <- sf::st_as_sf(data_flor, coords = c("Long", "Lat"), crs = 4326, remove = FALSE)
+  # Handle floristic data input (data_flor)
+  msg("Standardizing input: data_flor")
+  
+  if (inherits(data_flor, "sf")) {
+    msg("data_flor is already an sf object.")
+    pts_sf <- data_flor
+  } else if (inherits(data_flor, "Spatial")) {
+    msg("Converting sp object to sf...")
+    pts_sf <- sf::st_as_sf(data_flor)
+  } else if (is.data.frame(data_flor)) {
+    msg("Converting data.frame to sf (using Long/Lat)...")
+    required_cols <- c("Long", "Lat")
+    if (!all(required_cols %in% names(data_flor))) {
+      stop("If 'data_flor' is a data.frame, it must include 'Long' and 'Lat' columns.")
+    }
+    pts_sf <- sf::st_as_sf(data_flor, coords = c("Long", "Lat"), crs = 4326, remove = FALSE)
+  } else {
+    stop("Unsupported data_flor type: must be data.frame, sf, or Spatial object.")
   }
   
   # Reproject points to target CRS
