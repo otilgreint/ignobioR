@@ -76,7 +76,7 @@
 ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
                               CRS.new = 3035, tau, cellsize, verbose = TRUE,
                               check_overlap = TRUE, output_dir = getwd(),
-                              output_prefix = "Ignorance") {
+                              output_prefix = "MRFI") {
   
   # Helper function for conditional messages
   msg <- function(...) if (verbose) message(...)
@@ -562,7 +562,7 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   # --- 12. Save Output Files ---
   # Create file paths with custom prefix
   pdf_path <- file.path(output_dir, paste0(output_prefix, "_output.pdf"))
-  tif_path <- file.path(output_dir, paste0(output_prefix, "_MAP.tif"))
+  tif_path <- file.path(output_dir, paste0(output_prefix, "_map.tif"))
   csv_path <- file.path(output_dir, paste0(output_prefix, "_taxa.csv"))
   
   # Save multi-page PDF with all plots and statistics
