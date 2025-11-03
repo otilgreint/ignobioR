@@ -1,123 +1,160 @@
-#' @title Ignorance map (Modernized & Optimized)
+#' @title Map of Relative Floristic Ignorance (Modernized)
 #'
 #' @description Computes a Map of Relative Floristic Ignorance (MRFI) using
-#' modern `sf` and `terra` packages for high performance.
+#' modern `sf` and `terra` packages for high performance. Aligned with MRFI 
+#' philosophy: shows all areas where data exists, letting IRFI values indicate 
+#' sampling quality rather than excluding poorly-sampled areas.
 #'
-#' @param data_flor A data.frame with 5 columns: 'Taxon', 'Long', 'Lat',
-#' 'uncertainty' (radius in meters), and 'year'.
-#' @param site An `sf` object (or 'SpatialPolygonsDataFrame') representing the study
-#' area. Assumed to be in a geographic CRS (e.g., EPSG:4326) if not set.
-#' @param year_study The numeric year of the study (e.g., 2025). Defaults to
-#' the current system year.
-#' @param excl_areas An optional `sf` object (or 'SpatialPolygonsDataFrame')
-#' to delimit unsuitable areas to be excluded from both calculations and final output.
-#' @param CRS.new The numeric EPSG code for the projected CRS to use for all
-#' calculations (must be in meters). Default = 3035 (ETRS89-LAEA Europe).
-#' @param tau Percentual value of taxa loss in 100 years (0 <= tau < 100).
-#' @param cellsize The resolution of the output map (in meters).
-#' @param verbose Logical. If TRUE, prints progress messages.
-#' @param check_overlap Logical. If TRUE, checks and plots point-site overlap.
-#' @param output_dir Directory for output files. Defaults to working directory.
-#' @param output_prefix Prefix for output filenames. Default = "Ignorance".
-#' @param site_buffer Logical. If TRUE (default), the study area is expanded by
-#' cellsize/2 for template creation and point filtering, ensuring complete raster coverage.
-#' If FALSE, the original site boundary is used for these steps.
-#' @param mask_method Method for final raster masking. One of:
+#' @param data_flor A data.frame with 5 columns: 'Taxon' (species identity), 
+#' 'Long' (longitude), 'Lat' (latitude), 'uncertainty' (spatial uncertainty 
+#' radius in meters), and 'year' (year of occurrence record).
+#' @param site An `sf` object (or 'SpatialPolygonsDataFrame') representing the 
+#' study area. If no CRS is set, assumes EPSG:4326 (WGS84).
+#' @param year_study Numeric year of analysis (e.g., 2025). Defaults to current 
+#' system year if not specified.
+#' @param excl_areas Optional `sf` object (or 'SpatialPolygonsDataFrame') to 
+#' delimit unsuitable areas (e.g., marine surfaces for terrestrial flora) to be 
+#' excluded from calculations. If no CRS is set, assumes EPSG:4326.
+#' @param CRS.new Numeric EPSG code for projected CRS used in calculations (must 
+#' be in meters). Default = 3035 (ETRS89-LAEA Europe).
+#' @param tau Numeric. Percentual value of taxa loss over 100 years (0 <= tau < 100). 
+#' Represents the temporal decay of floristic records.
+#' @param cellsize Numeric. Resolution of output raster in meters.
+#' @param verbose Logical. If TRUE (default), prints progress messages during execution.
+#' @param check_overlap Logical. If TRUE (default), checks and plots spatial overlap 
+#' between occurrence points and study area.
+#' @param output_dir Character. Directory path for output files. Defaults to working directory.
+#' @param output_prefix Character. Prefix for output filenames. Default = "MRFI".
+#' @param site_buffer Logical. If TRUE (default), expands the study area for both 
+#' processing and final masking. If FALSE, uses original boundary. Buffer width 
+#' controlled by buffer_width parameter.
+#' @param buffer_width Numeric. Width of buffer in meters. If NULL (default), uses 
+#' cellsize/2 when site_buffer=TRUE. If specified, overrides default calculation.
+#' Must be >= 0. Buffer ensures complete raster coverage and avoids edge artifacts.
+#' Buffer will NOT extend into exclusion areas if provided.
+#' @param mask_method Character. Method for final raster masking. One of:
 #'   \itemize{
-#'     \item{"touches"}{ Include any cell intersecting the site boundary (default, most inclusive)}
-#'     \item{"centroid"}{ Include only cells whose center falls within the site (conservative)}
-#'     \item{"coverage"}{ Include cells with >50% area within the site (balanced)}
-#'     \item{"exact"}{ Use precise vector masking (slower but most accurate)}
+#'     \item{"touches"}{ Include any cell intersecting site boundary (default, MRFI-aligned)}
+#'     \item{"none"}{ Include entire raster extent, no masking (shows all data)}
 #'   }
-#' @param coverage_threshold Numeric between 0 and 1. When mask_method = "coverage",
-#' cells must have at least this fraction of their area within the site to be included.
-#' Default = 0.5 (50% coverage required).
-#' @param excl_coverage_threshold Numeric between 0 and 1. Cells are excluded only if
-#' this fraction of their area overlaps with exclusion areas. Default = 1.0 (100%,
-#' meaning only fully covered cells are excluded). Lower values (e.g., 0.5) exclude
+#' @param excl_coverage_threshold Numeric between 0 and 1. Cells are excluded only 
+#' if this fraction of their area overlaps with exclusion areas. Default = 1.0 (100%, 
+#' meaning only fully covered cells are excluded). Lower values (e.g., 0.5) exclude 
 #' cells that are 50% or more covered by exclusion areas.
+#' @param use_coverage_weighting Logical. If TRUE (default), weights ignorance 
+#' contribution by fraction of cell covered by each buffer (matches original algorithm, 
+#' slower but more accurate). If FALSE, uses faster binary approach where any buffer 
+#' touch contributes full ignorance value (faster but may underestimate ignorance).
 #'
 #' @return A list with 4 objects:
 #' \itemize{
-#' \item{`MRFI`}{ A `terra SpatRaster` of the Map of Relative Floristic Ignorance.}
-#' \item{`RICH`}{ A `terra SpatRaster` of species richness, computed without
-#' uncertainties.}
-#' \item{`Uncertainties`}{ A data.frame of the uncertainty and year values for
-#' all records used in the computation.}
-#' \item{`Statistics`}{ A data.frame summarizing the settings and results.}
+#'   \item{MRFI}{ A `terra SpatRaster` of the Map of Relative Floristic Ignorance}
+#'   \item{RICH}{ A `terra SpatRaster` of species richness computed without uncertainties}
+#'   \item{Uncertainties}{ A data.frame of uncertainty and year values for all records 
+#'   used in computation}
+#'   \item{Statistics}{ A data.frame summarizing settings and results}
 #' }
 #'
-#' @importFrom sf st_as_sf st_make_valid st_crs st_transform st_buffer st_intersects st_intersection st_union st_bbox st_coordinates st_geometry st_difference
-#' @importFrom terra rast values ncell cellFromXY mask crop crs vect rasterize extract ext global writeRaster app
+#' @importFrom sf st_as_sf st_make_valid st_crs st_transform st_buffer st_intersects st_intersection st_union st_bbox st_coordinates st_geometry st_difference st_sf
+#' @importFrom terra rast values ncell cellFromXY mask crop crs vect rasterize extract ext global writeRaster app max
 #' @importFrom utils txtProgressBar setTxtProgressBar write.csv
 #' @importFrom ggplot2 ggplot aes geom_tile geom_sf coord_equal theme_classic labs theme xlab ylab scale_fill_distiller guide_legend ggtitle guides geom_histogram coord_cartesian scale_y_continuous after_stat
 #' @importFrom grid unit grid.draw
 #' @importFrom gridExtra grid.arrange tableGrob
 #' @importFrom grDevices pdf dev.off
+#' 
 #' @export
+#' 
 #' @examples \dontrun{
-#' # Note: Requires the 'ignobioR' data objects
+#' # Load example data (requires 'ignobioR' package data)
 #' data(floratus)
 #' data(park)
 #' data(unsuitablezone)
 #'
-#' # Coerce old sp data to sf for modern use
-#' park_sf <- sf::st_as_sf(park)
-#' unsuitablezone_sf <- sf::st_as_sf(unsuitablezone)
-#'
-#' # Example with default settings (touches method, with buffer)
-#' set.seed(123)
+#' # Example 1: Default settings (accurate, with coverage weighting)
 #' mrfi <- ignorance_map_mod(
-#'   data_flor = floratus[sample(nrow(floratus), 2000), ],
+#'   data_flor = floratus,
 #'   site = park,
-#'   tau = 80,
+#'   excl_areas = unsuitablezone,
+#'   tau = 20,
 #'   cellsize = 2000
 #' )
 #'
-#' # Example with centroid masking and no buffer
-#' mrfi_centroid <- ignorance_map_mod(
+#' # Example 2: Custom buffer distance (500m)
+#' mrfi_500m <- ignorance_map_mod(
 #'   data_flor = floratus,
+#'   site = park,
 #'   excl_areas = unsuitablezone,
+#'   tau = 20,
+#'   cellsize = 2000,
+#'   buffer_width = 500
+#' )
+#'
+#' # Example 3: Large buffer to capture regional context
+#' mrfi_regional <- ignorance_map_mod(
+#'   data_flor = floratus,
+#'   site = park,
+#'   tau = 20,
+#'   cellsize = 2000,
+#'   buffer_width = 5000
+#' )
+#'
+#' # Example 4: Fast mode without coverage weighting
+#' mrfi_fast <- ignorance_map_mod(
+#'   data_flor = floratus,
+#'   site = park,
+#'   tau = 20,
+#'   cellsize = 2000,
+#'   use_coverage_weighting = FALSE
+#' )
+#'
+#' # Example 5: No buffer, no masking (maximum extent)
+#' mrfi_full <- ignorance_map_mod(
+#'   data_flor = floratus,
 #'   site = park,
 #'   tau = 20,
 #'   cellsize = 2000,
 #'   site_buffer = FALSE,
-#'   mask_method = "centroid"
+#'   mask_method = "none"
 #' )
 #'
-#' # Example with coverage-based masking (70% threshold)
-#' mrfi_coverage <- ignorance_map_mod(
-#'   data_flor = floratus,
-#'   site = park,
-#'   tau = 20,
-#'   cellsize = 2000,
-#'   mask_method = "coverage",
-#'   coverage_threshold = 0.7
-#' )
-#'
+#' # View results
 #' terra::plot(mrfi$MRFI)
+#' terra::plot(mrfi$RICH)
+#' print(mrfi$Statistics)
 #' }
 
 ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
                               CRS.new = 3035, tau, cellsize, verbose = TRUE,
                               check_overlap = TRUE, output_dir = getwd(),
                               output_prefix = "MRFI", site_buffer = TRUE,
-                              mask_method = "touches", coverage_threshold = 0.5,
-                              excl_coverage_threshold = 1.0) {
+                              buffer_width = NULL,
+                              mask_method = "touches",
+                              excl_coverage_threshold = 1.0,
+                              use_coverage_weighting = TRUE) {
   
-  # Helper function for conditional messages
+  # ============================================================================
+  # HELPER FUNCTIONS
+  # ============================================================================
+  
+  # Conditional message printing based on verbose setting
   msg <- function(...) if (verbose) message(...)
+  
+  # Record start time for performance tracking
   start_time <- Sys.time()
   
-  # --- 1. Settings and Input Validation ---
+  # ============================================================================
+  # SECTION 1: SETTINGS AND INPUT VALIDATION
+  # ============================================================================
+  
   msg("Checking settings and inputs...")
   
-  # Use current year if not specified
+  # Set year_study to current year if not specified
   if (is.null(year_study)) year_study <- as.numeric(format(Sys.Date(), "%Y"))
   
   # Validate year_study range
   if (year_study < 1800 || year_study > 2100) {
-    warning("year_study seems unusual. Double-check the value.")
+    warning("year_study seems unusual. Double-check the value")
   }
   
   # Check for future dates in occurrence data
@@ -126,7 +163,7 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   }
   
   # Validate tau parameter (percentage loss rate)
-  if (tau < 0 || tau >= 100) stop("0 <= tau < 100 is required.")
+  if (tau < 0 || tau >= 100) stop("0 <= tau < 100 is required")
   
   # Validate cellsize parameter
   if (cellsize <= 0) stop("cellsize must be positive")
@@ -136,17 +173,37 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     stop("CRS.new must be a valid positive EPSG code")
   }
   
-  # Validate mask_method parameter
-  valid_methods <- c("touches", "centroid", "coverage", "exact")
-  if (!mask_method %in% valid_methods) {
-    stop("mask_method must be one of: ", paste(valid_methods, collapse = ", "))
+  # Validate and process site_buffer and buffer_width parameters
+  if (!is.logical(site_buffer)) {
+    stop("site_buffer must be TRUE or FALSE. Use buffer_width parameter to specify distance.")
   }
   
-  # Validate coverage_threshold parameter
-  if (mask_method == "coverage") {
-    if (coverage_threshold <= 0 || coverage_threshold > 1) {
-      stop("coverage_threshold must be between 0 and 1")
+  if (site_buffer) {
+    # Determine buffer distance
+    if (!is.null(buffer_width)) {
+      if (!is.numeric(buffer_width) || buffer_width < 0) {
+        stop("buffer_width must be a positive numeric value (in meters)")
+      }
+      buffer_distance <- buffer_width
+    } else {
+      # Default: use half the cell size
+      buffer_distance <- cellsize / 2
     }
+    use_buffer <- TRUE
+  } else {
+    # No buffer requested
+    if (!is.null(buffer_width)) {
+      warning("buffer_width specified but site_buffer=FALSE. Buffer width will be ignored.")
+    }
+    buffer_distance <- 0
+    use_buffer <- FALSE
+  }
+  
+  # Validate mask_method parameter (only touches and none)
+  valid_methods <- c("touches", "none")
+  if (!mask_method %in% valid_methods) {
+    stop("mask_method must be one of: ", paste(valid_methods, collapse = ", "),
+         "\nNote: Other methods removed as they contradict MRFI philosophy.")
   }
   
   # Validate excl_coverage_threshold parameter
@@ -154,6 +211,17 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     if (excl_coverage_threshold <= 0 || excl_coverage_threshold > 1) {
       stop("excl_coverage_threshold must be between 0 and 1")
     }
+  }
+  
+  # Validate use_coverage_weighting parameter
+  if (!is.logical(use_coverage_weighting)) {
+    stop("use_coverage_weighting must be TRUE or FALSE")
+  }
+  
+  if (use_coverage_weighting) {
+    msg("Coverage weighting: ENABLED (accurate, matches original algorithm, slower)")
+  } else {
+    msg("Coverage weighting: DISABLED (faster, binary touch method)")
   }
   
   # Check required column names in data_flor
@@ -167,15 +235,19 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   
   # Warn if uncertainties are too small relative to cell size
   if (any(2 * data_flor$uncertainty < (cellsize / 20))) {
-    stop("Some records have uncertainty too small vs. cellsize. They may not be captured by the raster grid.")
+    warning("Some records have uncertainty very small relative to cellsize. ",
+            "They may not be well-captured by the raster grid.")
   }
   
   msg("Inputs validated.")
   
-  # --- 2. Coerce to SF and Reproject ---
+  # ============================================================================
+  # SECTION 2: COORDINATE SYSTEM SETUP AND REPROJECTION
+  # ============================================================================
+  
   msg(paste("Reprojecting inputs to EPSG:", CRS.new))
   
-  # Define CRS in both formats (used throughout)
+  # Define CRS in both sf and terra formats
   crs_sf <- sf::st_crs(CRS.new)
   crs_terra <- paste0("EPSG:", CRS.new)
   
@@ -189,28 +261,15 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   }
   
   # Reproject site to target CRS and fix any geometry issues
-  site_proj <- sf::st_transform(sf::st_make_valid(site), crs_sf)
+  site_proj_original <- sf::st_transform(sf::st_make_valid(site), crs_sf)
   
-  # Site buffer logic: create expanded boundary for processing if requested
-  if (site_buffer) {
-    msg("Creating expanded site boundary for processing (site + cellsize/2)...")
-    site_proj_expanded <- sf::st_buffer(site_proj, dist = cellsize / 2)
-    site_proj_expanded <- sf::st_make_valid(site_proj_expanded)
-  } else {
-    msg("Using original site boundary for processing (site_buffer = FALSE).")
-    site_proj_expanded <- site_proj
-  }
-  
-  # Convert both original and expanded site to terra vectors
-  site_vect_expanded <- terra::vect(site_proj_expanded) # Used for extent and filtering
-  site_vect_original <- terra::vect(site_proj)          # Used for final masking
-  
-  # Handle exclusion areas if provided
+  # Handle exclusion areas FIRST (before buffering site)
   excl_proj <- NULL
   has_exclusions <- !is.null(excl_areas)
   
   if (has_exclusions) {
     msg("Processing exclusion areas...")
+    
     # Convert from sp if needed
     if (inherits(excl_areas, "Spatial")) excl_areas <- sf::st_as_sf(excl_areas)
     
@@ -224,9 +283,47 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     excl_proj <- sf::st_union(sf::st_transform(sf::st_make_valid(excl_areas), crs_sf))
   }
   
-  # Handle floristic data input (data_flor)
+  # ============================================================================
+  # SECTION 3: SITE BUFFER LOGIC
+  # ============================================================================
+  
+  # Create expanded boundary, but NOT into exclusion zones
+  if (use_buffer) {
+    msg(paste0("Creating buffered site boundary (buffer = ", buffer_distance, "m)..."))
+    
+    # Buffer the site
+    site_proj_buffered <- sf::st_buffer(site_proj_original, dist = buffer_distance)
+    
+    # Remove exclusion areas from buffered site if they exist
+    if (has_exclusions) {
+      msg("  Removing exclusion areas from buffered site...")
+      site_proj_buffered <- sf::st_difference(site_proj_buffered, excl_proj)
+    }
+    
+    site_proj_buffered <- sf::st_make_valid(site_proj_buffered)
+    
+    # For processing: use buffered site
+    # For masking: also use buffered site (consistency!)
+    site_proj_processing <- site_proj_buffered
+    site_proj_mask <- site_proj_buffered
+    
+  } else {
+    msg("Using original site boundary (no buffer).")
+    site_proj_processing <- site_proj_original
+    site_proj_mask <- site_proj_original
+  }
+  
+  # Convert to terra vectors for rasterization
+  site_vect_processing <- terra::vect(site_proj_processing)
+  site_vect_mask <- terra::vect(site_proj_mask)
+  
+  # ============================================================================
+  # SECTION 4: FLORISTIC DATA PREPARATION
+  # ============================================================================
+  
   msg("Standardizing input: data_flor")
   
+  # Handle different input types for floristic data
   if (inherits(data_flor, "sf")) {
     msg("data_flor is already an sf object.")
     pts_sf <- data_flor
@@ -247,42 +344,49 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   # Reproject points to target CRS
   pts_proj <- sf::st_transform(pts_sf, crs_sf)
   
-  # Calculate points within site for later statistics (using original site boundary)
-  pts_in_site <- sf::st_intersection(pts_proj, site_proj)
+  # Calculate points within ORIGINAL site for statistics
+  pts_in_site <- sf::st_intersection(pts_proj, site_proj_original)
   
-  # --- 3. Optional: Check and visualize overlap ---
+  # ============================================================================
+  # SECTION 5: OPTIONAL OVERLAP CHECK AND VISUALIZATION
+  # ============================================================================
+  
   if (check_overlap) {
-    # Test spatial intersection between points and site (using original boundary)
-    overlap_check <- sf::st_intersects(pts_proj, site_proj, sparse = FALSE)
+    # Test spatial intersection between points and site
+    overlap_check <- sf::st_intersects(pts_proj, site_proj_processing, sparse = FALSE)
     n_overlap <- sum(overlap_check)
-    msg(paste("Number of occurrence points overlapping the site:", n_overlap))
+    msg(paste("Number of occurrence points overlapping the processing area:", n_overlap))
     
     if (n_overlap == 0) {
       warning("No points overlap the study area. Check projections or coordinates.")
     } else {
       # Create diagnostic plot showing boundaries
-      plot(sf::st_geometry(site_proj), col = NA, border = "black", 
-           main = "Points vs Site", lwd = 2)
-      if (site_buffer) {
-        plot(sf::st_geometry(site_proj_expanded), col = NA, border = "blue", 
-             add = TRUE, lty = 2)
+      plot(sf::st_geometry(site_proj_original), col = NA, border = "black", 
+           main = "Points vs Site Boundaries", lwd = 2)
+      
+      if (use_buffer) {
+        plot(sf::st_geometry(site_proj_buffered), col = NA, border = "blue", 
+             add = TRUE, lty = 2, lwd = 2)
       }
+      
       if (has_exclusions) {
         plot(sf::st_geometry(excl_proj), col = "lightgray", border = "red", 
              add = TRUE, lty = 2)
       }
+      
       points(sf::st_coordinates(pts_proj), col = "red", pch = 20, cex = 0.5)
       
-      legend_items <- c("Original boundary")
+      # Build legend dynamically
+      legend_items <- c("Original site")
       legend_cols <- c("black")
       legend_lty <- c(1)
       legend_lwd <- c(2)
       
-      if (site_buffer) {
-        legend_items <- c(legend_items, "Expanded boundary")
+      if (use_buffer) {
+        legend_items <- c(legend_items, "Buffered site (for analysis)")
         legend_cols <- c(legend_cols, "blue")
         legend_lty <- c(legend_lty, 2)
-        legend_lwd <- c(legend_lwd, 1)
+        legend_lwd <- c(legend_lwd, 2)
       }
       
       if (has_exclusions) {
@@ -293,18 +397,21 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       }
       
       legend("topright", legend = legend_items, col = legend_cols, 
-             lty = legend_lty, lwd = legend_lwd)
+             lty = legend_lty, lwd = legend_lwd, cex = 0.8)
     }
   }
   
-  # --- 4. OPTIMIZED: Pre-filter Points Before Buffering ---
+  # ============================================================================
+  # SECTION 6: OPTIMIZED POINT FILTERING AND BUFFER CREATION
+  # ============================================================================
+  
   msg("Filtering records and creating buffers (optimized)...")
   
   # Get maximum uncertainty to create search buffer around site
   max_uncertainty <- max(pts_proj$uncertainty)
   
-  # Create expanded search area (using expanded site + max buffer distance)
-  site_search_area <- sf::st_buffer(site_proj_expanded, dist = max_uncertainty)
+  # Create expanded search area
+  site_search_area <- sf::st_buffer(site_proj_processing, dist = max_uncertainty)
   
   # Pre-filter: keep only points whose locations could potentially intersect site
   potential_pts_idx <- sf::st_intersects(pts_proj, site_search_area, sparse = FALSE)[, 1]
@@ -312,11 +419,11 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   
   msg(paste("Pre-filtered to", nrow(pts_filtered), "potentially relevant points"))
   
-  # NOW create buffers only for filtered points (huge memory/time savings)
+  # Create buffers only for filtered points (memory optimization)
   buffers_filtered_sf <- sf::st_buffer(pts_filtered, dist = pts_filtered$uncertainty)
   
-  # Check which buffers actually intersect the expanded site
-  intersects_idx <- sf::st_intersects(buffers_filtered_sf, site_proj_expanded, sparse = FALSE)[, 1]
+  # Check which buffers actually intersect the processing site
+  intersects_idx <- sf::st_intersects(buffers_filtered_sf, site_proj_processing, sparse = FALSE)[, 1]
   
   # Keep only points and buffers that intersect
   pts_computed <- pts_filtered[intersects_idx, ]
@@ -325,7 +432,7 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   # Stop if no records remain
   if (nrow(pts_computed) == 0) stop("No occurrence buffers intersect the study area.")
   
-  # Remove unsuitable areas from buffers if provided and validate geometries
+  # Remove unsuitable areas from buffers if provided
   if (has_exclusions) {
     msg("Removing exclusion areas from occurrence buffers...")
     buffers_computed_sf <- sf::st_make_valid(
@@ -335,24 +442,41 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   
   msg(paste("Retained", nrow(pts_computed), "records for computation."))
   
-  # --- 5. Create Template Raster (Based on expanded site extent) ---
-  msg("Creating template raster...")
+  # ============================================================================
+  # SECTION 7: RASTER TEMPLATE CREATION WITH GUARANTEED COVERAGE
+  # ============================================================================
   
-  # Get bounding box from site_proj_expanded
-  site_bbox <- sf::st_bbox(site_proj_expanded)
+  msg("Creating template raster with guaranteed boundary coverage...")
+  
+  # Get bounding box from processing site
+  site_bbox <- sf::st_bbox(site_proj_processing)
+  
+  # Expand bbox by cellsize to ensure complete coverage of all corners/edges
+  # This guarantees at least one cell center will be inside even small protrusions
+  bbox_expanded <- site_bbox
+  bbox_expanded["xmin"] <- site_bbox["xmin"] - cellsize
+  bbox_expanded["xmax"] <- site_bbox["xmax"] + cellsize
+  bbox_expanded["ymin"] <- site_bbox["ymin"] - cellsize
+  bbox_expanded["ymax"] <- site_bbox["ymax"] + cellsize
   
   # Create empty raster template with specified resolution
   r_template <- terra::rast(
-    extent = terra::ext(site_bbox),
+    extent = terra::ext(bbox_expanded),
     resolution = cellsize,
     crs = crs_terra
   )
   terra::values(r_template) <- NA
   
-  # --- 6. OPTIMIZED: Calculate Richness Map Using terra::rasterize ---
+  msg(paste0("  Template extent expanded by ", cellsize, 
+             "m on all sides to ensure complete coverage"))
+  
+  # ============================================================================
+  # SECTION 8: SPECIES RICHNESS MAP CALCULATION
+  # ============================================================================
+  
   msg("Calculating species richness map (RICH)...")
   
-  # Convert points to terra vector format with taxon attribute
+  # Convert points to terra vector format
   pts_vect <- terra::vect(pts_computed)
   
   # Rasterize directly counting unique taxa per cell
@@ -366,7 +490,10 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   # Set NA cells to 0 (cells with no observations)
   r_rich[is.na(r_rich)] <- 0
   
-  # --- 7. OPTIMIZED: Calculate Per-Record Spatio-Temporal Scores ---
+  # ============================================================================
+  # SECTION 9: SPATIO-TEMPORAL SCORE CALCULATION
+  # ============================================================================
+  
   msg("Calculating spatio-temporal scores...")
   
   # Convert buffers to terra vector format
@@ -375,7 +502,7 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   # Extract cells covered by each buffer
   cell_data <- terra::extract(r_template, v_buff, cells = TRUE, ID = TRUE)
   
-  # Count how many cells each buffer covers (spatial uncertainty)
+  # Count how many cells each buffer covers (for spatial uncertainty)
   counts_per_id <- table(cell_data$ID)
   
   # Initialize spatial count vector
@@ -385,57 +512,117 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   # Calculate spatial score (inverse of cells covered)
   pts_computed$spatial_score <- 1 / spatial_count
   
-  # Calculate temporal score using exponential decay based on tau
+  # Calculate temporal score using exponential decay
   pts_computed$time_score <- (1 - (tau / 100))^((year_study - pts_computed$year) / 100)
   
   # Combine spatial and temporal scores
   pts_computed$st_ignorance <- pts_computed$spatial_score * pts_computed$time_score
   
-  # --- 8. Rasterize Per-Taxon Ignorance with Progress Bar ---
-  msg("Drafting Map of Relative Floristic Ignorance (processing by taxon)...")
+  # ============================================================================
+  # SECTION 10: PER-TAXON IGNORANCE RASTERIZATION
+  # ============================================================================
   
   # Get unique taxa list
   taxa_list <- unique(pts_computed$Taxon)
   
-  # Initialize progress bar
-  pb <- utils::txtProgressBar(min = 0, max = length(taxa_list), style = 3)
+  if (use_coverage_weighting) {
+    # METHOD 1: Coverage-weighted (ACCURATE, matches original algorithm)
+    msg("Drafting Map of Relative Floristic Ignorance (processing by taxon)...")
+    msg("  Using coverage-weighted rasterization (accurate, slower)")
+    
+    # Initialize progress bar
+    pb <- utils::txtProgressBar(min = 0, max = length(taxa_list), style = 3)
+    
+    raster_list <- suppressWarnings(
+      lapply(seq_along(taxa_list), function(i) {
+        tname <- taxa_list[i]
+        
+        # Filter for this taxon
+        taxon_idx <- pts_computed$Taxon == tname
+        pts_taxon <- pts_computed[taxon_idx, ]
+        bufs_taxon_sf <- buffers_computed_sf[taxon_idx, ]
+        
+        # Initialize empty raster for this taxon
+        tax_r <- r_template
+        terra::values(tax_r) <- 0
+        
+        # Process each buffer for this taxon individually
+        for (j in 1:nrow(pts_taxon)) {
+          # Create single buffer
+          single_buf <- sf::st_sf(
+            geometry = sf::st_geometry(bufs_taxon_sf[j, ])
+          )
+          
+          # Rasterize to get coverage fraction (0-1)
+          coverage_r <- terra::rasterize(
+            terra::vect(single_buf),
+            r_template,
+            cover = TRUE
+          )
+          
+          # Replace NA with 0
+          coverage_r[is.na(coverage_r)] <- 0
+          
+          # Weight the ignorance value by coverage fraction
+          weighted_r <- coverage_r * pts_taxon$st_ignorance[j]
+          
+          # Take maximum value per cell (if multiple buffers of same taxon overlap) - removed terra::maxbecause the terra package doesn't export a function called max
+          tax_r <- max(tax_r, weighted_r, na.rm = TRUE)
+        }
+        
+        utils::setTxtProgressBar(pb, i)
+        return(tax_r)
+      })
+    )
+    
+    close(pb)
+    
+  } else {
+    # METHOD 2: Binary touch method (FAST, but less accurate)
+    msg("Drafting Map of Relative Floristic Ignorance (processing by taxon)...")
+    msg("  Using binary touch method (fast, no coverage weighting)")
+    
+    # Initialize progress bar
+    pb <- utils::txtProgressBar(min = 0, max = length(taxa_list), style = 3)
+    
+    raster_list <- suppressWarnings(
+      lapply(seq_along(taxa_list), function(i) {
+        tname <- taxa_list[i]
+        
+        # Filter for this taxon
+        taxon_idx <- pts_computed$Taxon == tname
+        pts_taxon <- pts_computed[taxon_idx, ]
+        bufs_taxon_sf <- buffers_computed_sf[taxon_idx, ]
+        
+        # Create clean sf object
+        bufs_taxon_clean <- sf::st_sf(
+          st_ignorance = pts_taxon$st_ignorance,
+          geometry = sf::st_geometry(bufs_taxon_sf)
+        )
+        
+        # Rasterize without coverage weighting (faster)
+        tax_r <- terra::rasterize(
+          terra::vect(bufs_taxon_clean),
+          r_template,
+          field = "st_ignorance",
+          fun = "max",
+          touches = TRUE
+        )
+        
+        tax_r[is.na(tax_r)] <- 0
+        
+        utils::setTxtProgressBar(pb, i)
+        return(tax_r)
+      })
+    )
+    
+    close(pb)
+  }
   
-  # Process each taxon separately to get maximum ignorance per cell
-  raster_list <- suppressWarnings(
-    lapply(seq_along(taxa_list), function(i) {
-      tname <- taxa_list[i]
-      
-      # Filter points and buffers for this taxon
-      taxon_idx <- pts_computed$Taxon == tname
-      pts_taxon <- pts_computed[taxon_idx, ]
-      bufs_taxon_sf <- buffers_computed_sf[taxon_idx, ]
-      
-      # Create a clean sf object with only geometry and score column
-      bufs_taxon_clean <- sf::st_sf(
-        st_ignorance = pts_taxon$st_ignorance,
-        geometry = sf::st_geometry(bufs_taxon_sf)
-      )
-      
-      # Rasterize buffers, taking maximum ignorance value per cell
-      tax_r <- terra::rasterize(
-        terra::vect(bufs_taxon_clean),
-        r_template,
-        field = "st_ignorance",
-        fun = "max",
-        touches = TRUE
-      )
-      
-      # Convert NA to 0 (cells with no observations of this taxon)
-      tax_r[is.na(tax_r)] <- 0
-      
-      # Update progress bar
-      utils::setTxtProgressBar(pb, i)
-      return(tax_r)
-    })
-  )
-  close(pb)
+  # ============================================================================
+  # SECTION 11: MRFI RASTER FINALIZATION
+  # ============================================================================
   
-  # --- 9. Finalize MRFI Raster ---
   msg("Finalizing rasters...")
   
   # Keep only valid SpatRaster objects
@@ -455,61 +642,37 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   if (!is.finite(rmax)) rmax <- 0
   mrfi_r <- rmax - raster_sum
   
-  # --- 10. Apply Masking Based on Selected Method ---
+  # ============================================================================
+  # SECTION 12: MASKING APPLICATION
+  # ============================================================================
+  
   msg(paste0("Applying mask with method: '", mask_method, "'"))
   
   if (mask_method == "touches") {
-    # Method 1: Include any cell touched by the polygon (most inclusive)
+    # Include any cell touched by the polygon (MRFI-aligned, inclusive)
     site_mask_r <- terra::rasterize(
-      site_vect_original,  # Always use original boundary
+      site_vect_mask,
       r_template,
       field = 1,
       touches = TRUE
     )
     site_mask_r[site_mask_r == 0] <- NA
     
-  } else if (mask_method == "centroid") {
-    # Method 2: Include only cells whose centroid falls within the polygon
-    site_mask_r <- terra::rasterize(
-      site_vect_original,
-      r_template,
-      field = 1,
-      touches = FALSE  # Default: centroid must be inside
-    )
-    site_mask_r[site_mask_r == 0] <- NA
-    
-  } else if (mask_method == "coverage") {
-    # Method 3: Include cells based on % coverage threshold
-    msg(paste0("  Using coverage threshold: ", coverage_threshold * 100, "%"))
-    site_mask_r <- terra::rasterize(
-      site_vect_original,
-      r_template,
-      field = 1,
-      cover = TRUE  # Returns fraction of cell covered
-    )
-    # Keep cells meeting coverage threshold
-    site_mask_r[site_mask_r < coverage_threshold] <- NA
-    site_mask_r[!is.na(site_mask_r)] <- 1
-    
-  } else if (mask_method == "exact") {
-    # Method 4: Use exact vector masking (no rasterization)
-    msg("  Using exact vector masking (slower but most precise)")
-    mrfi_final <- terra::mask(terra::crop(mrfi_r, site_vect_original), 
-                              site_vect_original)
-    rich_final <- terra::mask(terra::crop(r_rich, site_vect_original), 
-                              site_vect_original)
-    # Skip the standard masking below
-    mask_method_applied <- "exact"
-  }
-  
-  # Apply mask (unless exact method was already used)
-  if (mask_method != "exact") {
+    # Apply mask
     mrfi_final <- terra::mask(terra::crop(mrfi_r, site_mask_r), site_mask_r)
     rich_final <- terra::mask(terra::crop(r_rich, site_mask_r), site_mask_r)
-    mask_method_applied <- mask_method
+    
+  } else if (mask_method == "none") {
+    # No masking - show entire extent (most MRFI-aligned)
+    msg("  No masking applied - showing entire raster extent")
+    mrfi_final <- mrfi_r
+    rich_final <- r_rich
   }
   
-  # --- 11. Remove Exclusion Areas from Final Output ---
+  # ============================================================================
+  # SECTION 13: EXCLUSION AREA REMOVAL
+  # ============================================================================
+  
   if (has_exclusions) {
     msg(paste0("Removing excluded areas from final output (threshold: ", 
                excl_coverage_threshold * 100, "% coverage)..."))
@@ -519,21 +682,19 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       terra::vect(excl_proj),
       r_template,
       field = 1,
-      cover = TRUE  # Returns fraction of cell covered by exclusion areas
+      cover = TRUE
     )
     
     # Set cells meeting the exclusion threshold to NA
     # Only cells >= excl_coverage_threshold are excluded
     mrfi_final[!is.na(excl_mask_r) & excl_mask_r >= excl_coverage_threshold] <- NA
     rich_final[!is.na(excl_mask_r) & excl_mask_r >= excl_coverage_threshold] <- NA
-    
-    # Count how many cells were excluded
-    n_excluded_cells <- sum(!is.na(excl_mask_r) & excl_mask_r >= excl_coverage_threshold, na.rm = TRUE)
-    msg(paste0("  ", n_excluded_cells, " cells excluded (>=", 
-               excl_coverage_threshold * 100, "% covered by exclusion areas)."))
   }
   
-  # --- 12. Compile Statistics ---
+  # ============================================================================
+  # SECTION 14: STATISTICS COMPILATION
+  # ============================================================================
+  
   msg("Compiling statistics...")
   end_time <- Sys.time()
   
@@ -541,22 +702,23 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   total_used_records <- nrow(pts_computed)
   excluded_records_count <- total_initial_records - total_used_records
   
-  # Create statistics summary table
+  # Create statistics summary
   statistics_df <- data.frame(
     Statistic = c(
       "Started",
       "Finished",
       "Elapsed time (secs)",
-      "Processing boundary used",
+      "Site buffer applied (m)",
+      "Processing & masking boundary",
       "Final masking method",
-      if (mask_method == "coverage") "Coverage threshold (%)" else NULL,
+      "Coverage weighting",
       "Exclusion areas applied",
       if (has_exclusions) "Exclusion coverage threshold (%)" else NULL,
       "CRS (EPSG code)",
       "Cell size (m)",
       "100 years % loss ratio (tau)",
       "Total initial records",
-      "Total occurrences within site (points)",
+      "Total occurrences within original site",
       "Total occurrences computed (buffers)",
       "Records excluded from analysis",
       "Occ. uncertainty (median, m)",
@@ -566,9 +728,10 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       as.character(start_time),
       as.character(end_time),
       round(as.numeric(end_time - start_time, units = "secs")),
-      if (site_buffer) "Original site + cellsize/2" else "Original site only",
-      mask_method_applied,
-      if (mask_method == "coverage") round(coverage_threshold * 100, 1) else NULL,
+      if (use_buffer) round(buffer_distance, 1) else "None",
+      if (use_buffer) paste0("Original site + ", round(buffer_distance, 1), "m buffer") else "Original site only",
+      mask_method,
+      if (use_coverage_weighting) "Enabled (accurate)" else "Disabled (fast)",
       if (has_exclusions) "Yes" else "No",
       if (has_exclusions) round(excl_coverage_threshold * 100, 1) else NULL,
       as.character(CRS.new),
@@ -583,18 +746,19 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     )
   )
   
-  # --- 13. Generate Plots ---
+  # ============================================================================
+  # SECTION 15: PLOT GENERATION
+  # ============================================================================
+  
   msg("Generating plots and output files...")
   
-  # Clip exclusion areas to site vicinity for plotting (if they exist)
+  # Clip exclusion areas to site vicinity for plotting
   excl_plot <- NULL
   if (has_exclusions) {
-    # Intersect exclusion areas with the site to show only relevant portions
-    excl_plot <- sf::st_intersection(excl_proj, site_proj)
+    excl_plot <- sf::st_intersection(excl_proj, site_proj_processing)
     # Handle case where intersection might be empty
     if (length(excl_plot) == 0 || all(sf::st_is_empty(excl_plot))) {
       excl_plot <- NULL
-      msg("Note: Exclusion areas do not overlap with site boundary for plotting")
     }
   }
   
@@ -613,11 +777,14 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   mrfi_breaks <- seq(0, mrfi_max_val, length.out = 12)
   rich_breaks <- seq(0, rich_max_val, length.out = 12)
   
+  # --------------------------------------------------------------------------
   # Plot 1: Map of Relative Floristic Ignorance
+  # --------------------------------------------------------------------------
+  
   p1 <- ggplot2::ggplot(mrfi_df) +
     ggplot2::coord_equal() +
     ggplot2::theme_classic() +
-    ggplot2::labs(fill = "IFI") +
+    ggplot2::labs(fill = "IRFI") +
     ggplot2::theme(
       legend.position = "right",
       legend.direction = 'vertical',
@@ -640,27 +807,42 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       linewidth = 0.1
     ) +
     ggplot2::geom_sf(
-      data = site_proj,
+      data = site_proj_original,
       fill = NA,
       color = "black",
-      size = 1,
+      linewidth = 1,
       inherit.aes = FALSE
     ) +
     ggplot2::ggtitle("Map of Relative Floristic Ignorance (MRFI)")
   
-  # Add exclusion areas to plot if present
-  if (has_exclusions && !is.null(excl_plot)) {
+  # Add buffered boundary if applicable (dashed, thicker)
+  if (use_buffer && mask_method == "touches") {
     p1 <- p1 + ggplot2::geom_sf(
-      data = excl_plot,
+      data = site_proj_buffered,
       fill = NA,
       color = "black",
-      size = 0.5,
+      linewidth = 1.2,
       linetype = "dashed",
       inherit.aes = FALSE
     )
   }
   
+  # Add exclusion areas (hatched pattern via thin lines)
+  if (has_exclusions && !is.null(excl_plot)) {
+    p1 <- p1 + ggplot2::geom_sf(
+      data = excl_plot,
+      fill = NA,
+      color = "black",
+      linewidth = 0.3,
+      linetype = "dotted",
+      inherit.aes = FALSE
+    )
+  }
+  
+  # --------------------------------------------------------------------------
   # Plot 2: Species Richness Map
+  # --------------------------------------------------------------------------
+  
   p2 <- ggplot2::ggplot(rich_df) +
     ggplot2::coord_equal() +
     ggplot2::theme_classic() +
@@ -676,10 +858,10 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       linewidth = 0.1
     ) +
     ggplot2::geom_sf(
-      data = site_proj,
+      data = site_proj_original,
       fill = NA,
       color = "black",
-      size = 1,
+      linewidth = 1,
       inherit.aes = FALSE
     ) +
     ggplot2::scale_fill_distiller(
@@ -695,19 +877,34 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     ggplot2::ylab("Latitude") +
     ggplot2::guides(fill = ggplot2::guide_legend(title = "Value"))
   
-  # Add exclusion areas to plot if present
-  if (has_exclusions && !is.null(excl_plot)) {
+  # Add buffered boundary if applicable (dashed, thicker)
+  if (use_buffer && mask_method == "touches") {
     p2 <- p2 + ggplot2::geom_sf(
-      data = excl_plot,
+      data = site_proj_buffered,
       fill = NA,
       color = "black",
-      size = 0.5,
+      linewidth = 1.2,
       linetype = "dashed",
       inherit.aes = FALSE
     )
   }
   
+  # Add exclusion areas (hatched pattern via thin lines)
+  if (has_exclusions && !is.null(excl_plot)) {
+    p2 <- p2 + ggplot2::geom_sf(
+      data = excl_plot,
+      fill = NA,
+      color = "black",
+      linewidth = 0.3,
+      linetype = "dotted",
+      inherit.aes = FALSE
+    )
+  }
+  
+  # --------------------------------------------------------------------------
   # Plot 3: Temporal Uncertainty (Occurrence Year Distribution)
+  # --------------------------------------------------------------------------
+  
   p3 <- ggplot2::ggplot(pts_computed) +
     ggplot2::aes(x = .data$year, y = ggplot2::after_stat(density)) +
     ggplot2::geom_histogram(
@@ -722,7 +919,10 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     ggplot2::ylab("Frequency") +
     ggplot2::theme_classic()
   
+  # --------------------------------------------------------------------------
   # Plot 4: Spatial Uncertainty Distribution
+  # --------------------------------------------------------------------------
+  
   p4 <- ggplot2::ggplot(pts_computed) +
     ggplot2::aes(x = .data$uncertainty, y = ggplot2::after_stat(density)) +
     ggplot2::geom_histogram(
@@ -739,7 +939,10 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     ggplot2::ylab("Frequency") +
     ggplot2::theme_classic()
   
-  # --- 14. Save Output Files ---
+  # ============================================================================
+  # SECTION 16: FILE OUTPUT
+  # ============================================================================
+  
   # Create file paths with custom prefix
   pdf_path <- file.path(output_dir, paste0(output_prefix, "_output.pdf"))
   tif_path <- file.path(output_dir, paste0(output_prefix, "_map.tif"))
@@ -767,7 +970,11 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   
   msg(paste0("Done! Files saved to: ", output_dir))
   
-  # --- 15. Display Plots in Console ---
+  # ============================================================================
+  # SECTION 17: CONSOLE DISPLAY
+  # ============================================================================
+  
+  # Display plots in console
   print(p1)
   print(p2)
   print(p3)
@@ -779,7 +986,10 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     )
   )
   
-  # --- 16. Return Results ---
+  # ============================================================================
+  # SECTION 18: RETURN RESULTS
+  # ============================================================================
+  
   return(list(
     MRFI = mrfi_final,
     RICH = rich_final,
