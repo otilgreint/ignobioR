@@ -4,6 +4,9 @@
 #' modern `sf` and `terra` packages for high performance. Aligned with MRFI 
 #' philosophy: shows all areas where data exists, letting IRFI values indicate 
 #' sampling quality rather than excluding poorly-sampled areas.
+#' 
+#' The function automatically generates BOTH quantile and continuous visualizations,
+#' providing comprehensive analysis in a standardized 4-page PDF output.
 #'
 #' @param data_flor A data.frame with 5 columns: 'Taxon' (species identity), 
 #' 'Long' (longitude), 'Lat' (latitude), 'uncertainty' (spatial uncertainty 
@@ -41,13 +44,6 @@
 #' contribution by fraction of cell covered by each buffer (matches original algorithm, 
 #' slower but more accurate). If FALSE, uses faster binary approach where any buffer 
 #' touch contributes full ignorance value (faster but may underestimate ignorance).
-#' @param color_scale Character. Color scale method for MRFI plot. One of:
-#'   \itemize{
-#'     \item{"continuous"}{ Continuous color gradient (default)}
-#'     \item{"quantile"}{ Colors based on quantile breaks (highlights sampling differences)}
-#'   }
-#' @param n_quantiles Numeric. Number of quantile breaks when color_scale="quantile". 
-#' Default = 8 (octiles). Ignored if color_scale="continuous".
 #'
 #' @return A list with 4 objects:
 #' \itemize{
@@ -57,13 +53,25 @@
 #'   used in computation}
 #'   \item{Statistics}{ A data.frame summarizing settings and results}
 #' }
+#' 
+#' @details 
+#' PDF Output Structure (4 pages, A4 landscape):
+#' \itemize{
+#'   \item{Page 1}{ Quantile comparison (MRFI + Richness) - Primary analysis figure}
+#'   \item{Page 2}{ Continuous comparison (MRFI + Richness) - Raw data view}
+#'   \item{Page 3}{ Data diagnostics (temporal + spatial uncertainty histograms)}
+#'   \item{Page 4}{ Summary statistics table}
+#' }
+#' 
+#' Both quantile and continuous scales use 9 colors from the Spectral palette.
+#' Quantile maps use 8 quantiles (octiles) for optimal class discrimination.
 #'
 #' @importFrom sf st_as_sf st_make_valid st_crs st_transform st_buffer st_intersects st_intersection st_union st_bbox st_coordinates st_geometry st_difference st_sf
 #' @importFrom terra rast values ncell cellFromXY mask crop crs vect rasterize extract ext global writeRaster app
 #' @importFrom utils txtProgressBar setTxtProgressBar write.csv
-#' @importFrom ggplot2 ggplot aes geom_tile geom_sf coord_equal theme_classic labs theme xlab ylab scale_fill_distiller scale_fill_gradientn guide_legend guide_colorbar ggtitle guides geom_histogram coord_cartesian scale_y_continuous after_stat element_text
+#' @importFrom ggplot2 ggplot aes geom_tile geom_sf coord_equal theme_classic labs theme xlab ylab scale_fill_distiller scale_fill_gradientn guide_legend guide_colorbar ggtitle guides geom_histogram coord_cartesian scale_y_continuous after_stat element_text element_blank
 #' @importFrom grid unit grid.draw
-#' @importFrom gridExtra grid.arrange tableGrob
+#' @importFrom gridExtra grid.arrange tableGrob arrangeGrob
 #' @importFrom grDevices pdf dev.off
 #' @importFrom stats quantile
 #' @importFrom RColorBrewer brewer.pal
@@ -77,7 +85,7 @@
 #' data(park)
 #' data(unsuitablezone)
 #'
-#' # Example 1: Default settings (no buffer, continuous scale, accurate)
+#' # Example 1: Basic usage with all defaults
 #' mrfi <- ignorance_map_mod(
 #'   data_flor = floratus,
 #'   site = park,
@@ -92,7 +100,7 @@
 #'   site = park,
 #'   tau = 20,
 #'   cellsize = 2000,
-#'   site_buffer = TRUE  # Uses cellsize (2000m) as buffer
+#'   site_buffer = TRUE
 #' )
 #'
 #' # Example 3: Custom buffer distance (5km)
@@ -106,32 +114,13 @@
 #'   buffer_width = 5000
 #' )
 #'
-#' # Example 4: Quantile color scale to highlight sampling differences
-#' mrfi_quantile <- ignorance_map_mod(
-#'   data_flor = floratus,
-#'   site = park,
-#'   tau = 20,
-#'   cellsize = 2000,
-#'   color_scale = "quantile"  # Uses 8 quantiles by default (octiles)
-#' )
-#'
-#' # Example 5: Fast mode without coverage weighting
+#' # Example 4: Fast mode without coverage weighting
 #' mrfi_fast <- ignorance_map_mod(
 #'   data_flor = floratus,
 #'   site = park,
 #'   tau = 20,
 #'   cellsize = 2000,
 #'   use_coverage_weighting = FALSE
-#' )
-#'
-#' # Example 6: No buffer, no masking (maximum extent)
-#' mrfi_full <- ignorance_map_mod(
-#'   data_flor = floratus,
-#'   site = park,
-#'   tau = 20,
-#'   cellsize = 2000,
-#'   site_buffer = FALSE,
-#'   mask_method = "none"
 #' )
 #'
 #' # View results
@@ -146,9 +135,7 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
                               output_prefix = "MRFI", site_buffer = FALSE,
                               buffer_width = NULL,
                               mask_method = "touches",
-                              use_coverage_weighting = TRUE,
-                              color_scale = "continuous",
-                              n_quantiles = 8) {
+                              use_coverage_weighting = TRUE) {
   
   # ============================================================================
   # HELPER FUNCTIONS
@@ -234,19 +221,6 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     msg("Coverage weighting: ENABLED (accurate, matches original algorithm, slower)...")
   } else {
     msg("Coverage weighting: DISABLED (faster, binary touch method)...")
-  }
-  
-  # Validate color_scale parameter
-  valid_color_scales <- c("continuous", "quantile")
-  if (!color_scale %in% valid_color_scales) {
-    stop("color_scale must be one of: ", paste(valid_color_scales, collapse = ", "), ".")
-  }
-  
-  # Validate n_quantiles parameter
-  if (color_scale == "quantile") {
-    if (!is.numeric(n_quantiles) || n_quantiles < 2 || n_quantiles > 20) {
-      stop("n_quantiles must be a numeric value between 2 and 20.")
-    }
   }
   
   # Check required column names in data_flor
@@ -735,8 +709,6 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       "Processing & masking boundary",
       "Final masking method",
       "Coverage weighting",
-      "Color scale",
-      if (color_scale == "quantile") "Number of quantiles" else NULL,
       "Exclusion areas applied",
       "CRS (EPSG code)",
       "Cell size (m)",
@@ -756,8 +728,6 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       if (use_buffer) paste0("Original site + ", round(buffer_distance, 1), "m buffer") else "Original site only",
       mask_method,
       if (use_coverage_weighting) "Enabled (accurate)" else "Disabled (fast)",
-      color_scale,
-      if (color_scale == "quantile") n_quantiles else NULL,
       if (has_exclusions) "Yes" else "No",
       as.character(CRS.new),
       cellsize,
@@ -775,7 +745,7 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   # SECTION 15: PLOT GENERATION
   # ============================================================================
   
-  msg("Generating plots and output files...")
+  msg("Generating plots (quantile + continuous versions)...")
   
   # Clip exclusion areas to site vicinity for plotting
   excl_plot <- NULL
@@ -794,151 +764,222 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   rich_df <- as.data.frame(rich_final, xy = TRUE)
   colnames(rich_df) <- c("x", "y", "value")
   
-  # Get max values
+  # Get max values for continuous scales
   mrfi_max_val <- terra::global(mrfi_final, "max", na.rm = TRUE)$max
   rich_max_val <- terra::global(rich_final, "max", na.rm = TRUE)$max
   
-  # Create breaks based on color_scale setting
-  if (color_scale == "quantile") {
-    # Quantile breaks: highlights sampling differences
-    msg("  Creating quantile breaks for MRFI plot...")
-    
-    # Get non-NA values from raster
-    mrfi_values <- terra::values(mrfi_final, na.rm = TRUE)
-    
-    # Check if we have enough unique values for quantiles
-    n_unique <- length(unique(mrfi_values))
-    
-    if (n_unique < n_quantiles) {
-      warning("Not enough unique IRFI values (", n_unique, ") for ", n_quantiles, 
-              " quantiles. Using ", n_unique, " breaks instead.")
-      n_quantiles_actual <- n_unique
-    } else {
-      n_quantiles_actual <- n_quantiles
-    }
-    
-    # Calculate quantile breaks (boundary values for legend)
-    if (n_unique > 1) {
-      mrfi_breaks <- stats::quantile(mrfi_values, 
-                                     probs = seq(0, 1, length.out = n_quantiles_actual + 1), 
-                                     na.rm = TRUE)
-      mrfi_breaks <- unique(mrfi_breaks)  # Remove duplicates
-    } else {
-      # Only one unique value
-      mrfi_breaks <- c(min(mrfi_values), max(mrfi_values))
-    }
-    
+  # --------------------------------------------------------------------------
+  # QUANTILE BREAKS CALCULATION (8 quantiles = octiles)
+  # --------------------------------------------------------------------------
+  
+  msg("  Calculating quantile breaks (8 quantiles)...")
+  
+  # MRFI quantile breaks
+  mrfi_values <- terra::values(mrfi_final, na.rm = TRUE)
+  n_unique_mrfi <- length(unique(mrfi_values))
+  
+  if (n_unique_mrfi >= 8) {
+    mrfi_breaks_quant <- stats::quantile(mrfi_values, 
+                                         probs = seq(0, 1, length.out = 9), 
+                                         na.rm = TRUE)
+    mrfi_breaks_quant <- unique(mrfi_breaks_quant)
   } else {
-    # Continuous breaks: evenly spaced (9 values for consistency)
-    mrfi_breaks <- seq(0, mrfi_max_val, length.out = 9)
+    mrfi_breaks_quant <- stats::quantile(mrfi_values, 
+                                         probs = seq(0, 1, length.out = n_unique_mrfi + 1), 
+                                         na.rm = TRUE)
+    mrfi_breaks_quant <- unique(mrfi_breaks_quant)
   }
   
-  # Richness breaks: 9 values (consistent with MRFI continuous)
-  rich_breaks <- seq(0, rich_max_val, length.out = 9)
+  # Richness quantile breaks
+  rich_values <- terra::values(rich_final, na.rm = TRUE)
+  rich_values <- rich_values[rich_values > 0]  # Exclude zeros for better distribution
+  n_unique_rich <- length(unique(rich_values))
+  
+  if (n_unique_rich >= 8) {
+    rich_breaks_quant <- stats::quantile(rich_values, 
+                                         probs = seq(0, 1, length.out = 9), 
+                                         na.rm = TRUE)
+    rich_breaks_quant <- unique(rich_breaks_quant)
+    # Add 0 at the beginning for the zero-richness cells
+    rich_breaks_quant <- c(0, rich_breaks_quant)
+  } else {
+    rich_breaks_quant <- stats::quantile(rich_values, 
+                                         probs = seq(0, 1, length.out = n_unique_rich + 1), 
+                                         na.rm = TRUE)
+    rich_breaks_quant <- unique(rich_breaks_quant)
+    rich_breaks_quant <- c(0, rich_breaks_quant)
+  }
+  
+  # Continuous breaks (9 values for consistency)
+  mrfi_breaks_cont <- seq(0, mrfi_max_val, length.out = 9)
+  rich_breaks_cont <- seq(0, rich_max_val, length.out = 9)
   
   # --------------------------------------------------------------------------
-  # Plot 1: Map of Relative Floristic Ignorance
+  # HELPER FUNCTION: Create base plot with boundaries
   # --------------------------------------------------------------------------
   
-  p1 <- ggplot2::ggplot(mrfi_df) +
+  add_boundaries <- function(p) {
+    # Add original site boundary (solid black, thick)
+    p <- p + ggplot2::geom_sf(
+      data = site_proj_original,
+      fill = NA,
+      color = "black",
+      linewidth = 1,
+      inherit.aes = FALSE
+    )
+    
+    # Add buffered boundary if buffer is used (dashed black, same thickness)
+    if (use_buffer && !is.null(site_proj_buffered)) {
+      p <- p + ggplot2::geom_sf(
+        data = site_proj_buffered,
+        fill = NA,
+        color = "black",
+        linewidth = 1,
+        linetype = "dashed",
+        inherit.aes = FALSE
+      )
+    }
+    
+    # Add exclusion areas (dotted, thin)
+    if (has_exclusions && !is.null(excl_plot)) {
+      p <- p + ggplot2::geom_sf(
+        data = excl_plot,
+        fill = NA,
+        color = "black",
+        linewidth = 0.5,
+        linetype = "dotted",
+        inherit.aes = FALSE
+      )
+    }
+    
+    return(p)
+  }
+  
+  # --------------------------------------------------------------------------
+  # PLOT 1A: MRFI - Quantile Scale
+  # --------------------------------------------------------------------------
+  
+  p1_quant <- ggplot2::ggplot(mrfi_df) +
     ggplot2::coord_equal() +
     ggplot2::theme_classic() +
-    ggplot2::labs(fill = "IRFI") +
     ggplot2::theme(
       legend.position = "right",
       legend.direction = 'vertical',
-      legend.key.width = grid::unit(0.6, "cm")
+      legend.key.width = grid::unit(0.6, "cm"),
+      plot.title = ggplot2::element_text(size = 11, face = "bold")
     ) +
-    ggplot2::xlab("Longitude") +
-    ggplot2::ylab("Latitude")
-  
-  # Add appropriate color scale based on method
-  if (color_scale == "quantile") {
-    # Quantile-based color scale with 9 colors
-    p1 <- p1 + ggplot2::scale_fill_gradientn(
+    ggplot2::geom_tile(
+      mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value),
+      alpha = 0.8,
+      colour = "black",
+      linewidth = 0.1
+    ) +
+    ggplot2::scale_fill_gradientn(
       colors = rev(RColorBrewer::brewer.pal(9, "Spectral")),
-      values = scales::rescale(mrfi_breaks),
-      breaks = mrfi_breaks,
-      labels = round(mrfi_breaks, 0),
-      limits = c(min(mrfi_breaks), max(mrfi_breaks)),
+      values = scales::rescale(mrfi_breaks_quant),
+      breaks = mrfi_breaks_quant,
+      labels = round(mrfi_breaks_quant, 0),
+      limits = c(min(mrfi_breaks_quant), max(mrfi_breaks_quant)),
       na.value = "transparent",
       guide = ggplot2::guide_legend(
         title = "IRFI",
         keyheight = grid::unit(1.2, "lines"),
         keywidth = grid::unit(1.2, "lines"),
         label.theme = ggplot2::element_text(size = 9),
-        title.theme = ggplot2::element_text(size = 10, face = "bold"),
-        override.aes = list(alpha = 1)
+        title.theme = ggplot2::element_text(size = 10, face = "bold")
       )
-    )
-  } else {
-    # Continuous color scale with 9 colors
-    p1 <- p1 + ggplot2::scale_fill_distiller(
-      palette = "Spectral",
-      direction = -1,
-      limits = c(min(mrfi_breaks), max(mrfi_breaks)),
-      breaks = mrfi_breaks,
-      labels = round(mrfi_breaks, 0)
-    )
-  }
+    ) +
+    ggplot2::ggtitle("MRFI - Quantile Scale (Octiles)") +
+    ggplot2::xlab("Longitude") +
+    ggplot2::ylab("Latitude")
   
-  # Add raster tiles
-  p1 <- p1 +
-    ggplot2::geom_tile(
-      mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value),
-      alpha = 0.8,
-      colour = "black",
-      linewidth = 0.1
-    )
-  
-  # Add original site boundary (solid black, thick)
-  p1 <- p1 + ggplot2::geom_sf(
-    data = site_proj_original,
-    fill = NA,
-    color = "black",
-    linewidth = 1,
-    inherit.aes = FALSE
-  )
-  
-  # Add buffered boundary if buffer is used (dashed black, same thickness)
-  if (use_buffer && !is.null(site_proj_buffered)) {
-    p1 <- p1 + ggplot2::geom_sf(
-      data = site_proj_buffered,
-      fill = NA,
-      color = "black",
-      linewidth = 1,
-      linetype = "dashed",
-      inherit.aes = FALSE
-    )
-  }
-  
-  # Add exclusion areas (dotted, thin)
-  if (has_exclusions && !is.null(excl_plot)) {
-    p1 <- p1 + ggplot2::geom_sf(
-      data = excl_plot,
-      fill = NA,
-      color = "black",
-      linewidth = 0.5,
-      linetype = "dotted",
-      inherit.aes = FALSE
-    )
-  }
-  
-  # Add title
-  p1 <- p1 + ggplot2::ggtitle(paste0("Map of Relative Floristic Ignorance (MRFI) - ", 
-                                     ifelse(color_scale == "quantile", "Quantile scale", "Continuous scale")))
+  p1_quant <- add_boundaries(p1_quant)
   
   # --------------------------------------------------------------------------
-  # Plot 2: Species Richness Map
+  # PLOT 1B: Richness - Quantile Scale
   # --------------------------------------------------------------------------
   
-  p2 <- ggplot2::ggplot(rich_df) +
+  p2_quant <- ggplot2::ggplot(rich_df) +
     ggplot2::coord_equal() +
     ggplot2::theme_classic() +
     ggplot2::theme(
       legend.position = "right",
       legend.direction = 'vertical',
-      legend.key.width = grid::unit(0.6, "cm")
+      legend.key.width = grid::unit(0.6, "cm"),
+      plot.title = ggplot2::element_text(size = 11, face = "bold")
+    ) +
+    ggplot2::geom_tile(
+      mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value),
+      alpha = 0.8,
+      colour = "black",
+      linewidth = 0.1
+    ) +
+    ggplot2::scale_fill_gradientn(
+      colors = RColorBrewer::brewer.pal(9, "Spectral"),
+      values = scales::rescale(rich_breaks_quant),
+      breaks = rich_breaks_quant,
+      labels = round(rich_breaks_quant, 0),
+      limits = c(min(rich_breaks_quant), max(rich_breaks_quant)),
+      na.value = "transparent",
+      guide = ggplot2::guide_legend(
+        title = "Richness",
+        keyheight = grid::unit(1.2, "lines"),
+        keywidth = grid::unit(1.2, "lines"),
+        label.theme = ggplot2::element_text(size = 9),
+        title.theme = ggplot2::element_text(size = 10, face = "bold")
+      )
+    ) +
+    ggplot2::ggtitle("Species Richness - Quantile Scale (Octiles)") +
+    ggplot2::xlab("Longitude") +
+    ggplot2::ylab("Latitude")
+  
+  p2_quant <- add_boundaries(p2_quant)
+  
+  # --------------------------------------------------------------------------
+  # PLOT 2A: MRFI - Continuous Scale
+  # --------------------------------------------------------------------------
+  
+  p1_cont <- ggplot2::ggplot(mrfi_df) +
+    ggplot2::coord_equal() +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      legend.position = "right",
+      legend.direction = 'vertical',
+      legend.key.width = grid::unit(0.6, "cm"),
+      plot.title = ggplot2::element_text(size = 11, face = "bold")
+    ) +
+    ggplot2::geom_tile(
+      mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value),
+      alpha = 0.8,
+      colour = "black",
+      linewidth = 0.1
+    ) +
+    ggplot2::scale_fill_distiller(
+      palette = "Spectral",
+      direction = -1,
+      limits = c(min(mrfi_breaks_cont), max(mrfi_breaks_cont)),
+      breaks = mrfi_breaks_cont,
+      labels = round(mrfi_breaks_cont, 0)
+    ) +
+    ggplot2::ggtitle("MRFI - Continuous Scale") +
+    ggplot2::xlab("Longitude") +
+    ggplot2::ylab("Latitude") +
+    ggplot2::labs(fill = "IRFI")
+  
+  p1_cont <- add_boundaries(p1_cont)
+  
+  # --------------------------------------------------------------------------
+  # PLOT 2B: Richness - Continuous Scale
+  # --------------------------------------------------------------------------
+  
+  p2_cont <- ggplot2::ggplot(rich_df) +
+    ggplot2::coord_equal() +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      legend.position = "right",
+      legend.direction = 'vertical',
+      legend.key.width = grid::unit(0.6, "cm"),
+      plot.title = ggplot2::element_text(size = 11, face = "bold")
     ) +
     ggplot2::geom_tile(
       mapping = ggplot2::aes(x = .data$x, y = .data$y, fill = .data$value),
@@ -949,49 +990,18 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     ggplot2::scale_fill_gradientn(
       colors = RColorBrewer::brewer.pal(9, "Spectral"),
       limits = c(0, rich_max_val),
-      breaks = rich_breaks,
-      labels = round(rich_breaks, 0),
-      guide = ggplot2::guide_legend(title = "Value")
+      breaks = rich_breaks_cont,
+      labels = round(rich_breaks_cont, 0),
+      guide = ggplot2::guide_legend(title = "Richness")
     ) +
-    ggplot2::ggtitle("Species richness map (without uncertainties)") +
+    ggplot2::ggtitle("Species Richness - Continuous Scale") +
     ggplot2::xlab("Longitude") +
     ggplot2::ylab("Latitude")
   
-  # Add original site boundary (solid black, thick)
-  p2 <- p2 + ggplot2::geom_sf(
-    data = site_proj_original,
-    fill = NA,
-    color = "black",
-    linewidth = 1,
-    inherit.aes = FALSE
-  )
-  
-  # Add buffered boundary if buffer is used (dashed black, same thickness)
-  if (use_buffer && !is.null(site_proj_buffered)) {
-    p2 <- p2 + ggplot2::geom_sf(
-      data = site_proj_buffered,
-      fill = NA,
-      color = "black",
-      linewidth = 1,
-      linetype = "dashed",
-      inherit.aes = FALSE
-    )
-  }
-  
-  # Add exclusion areas (dotted, thin)
-  if (has_exclusions && !is.null(excl_plot)) {
-    p2 <- p2 + ggplot2::geom_sf(
-      data = excl_plot,
-      fill = NA,
-      color = "black",
-      linewidth = 0.5,
-      linetype = "dotted",
-      inherit.aes = FALSE
-    )
-  }
+  p2_cont <- add_boundaries(p2_cont)
   
   # --------------------------------------------------------------------------
-  # Plot 3: Temporal Uncertainty (Occurrence Year Distribution)
+  # PLOT 3: Temporal Uncertainty (Occurrence Year Distribution)
   # --------------------------------------------------------------------------
   
   p3 <- ggplot2::ggplot(pts_computed) +
@@ -1003,13 +1013,14 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     ) +
     ggplot2::coord_cartesian(xlim = c(min(pts_computed$year), year_study)) +
     ggplot2::scale_y_continuous(labels = function(x) paste0(x * 100, "%")) +
-    ggplot2::ggtitle("Occurrence date") +
+    ggplot2::ggtitle("Temporal Distribution - Occurrence Dates") +
     ggplot2::xlab("Year") +
     ggplot2::ylab("Frequency") +
-    ggplot2::theme_classic()
+    ggplot2::theme_classic() +
+    ggplot2::theme(plot.title = ggplot2::element_text(size = 11, face = "bold"))
   
   # --------------------------------------------------------------------------
-  # Plot 4: Spatial Uncertainty Distribution
+  # PLOT 4: Spatial Uncertainty Distribution
   # --------------------------------------------------------------------------
   
   p4 <- ggplot2::ggplot(pts_computed) +
@@ -1023,32 +1034,59 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       xlim = c(min(pts_computed$uncertainty), max(pts_computed$uncertainty))
     ) +
     ggplot2::scale_y_continuous(labels = function(x) paste0(x * 100, "%")) +
-    ggplot2::ggtitle("Occurrence spatial uncertainty") +
+    ggplot2::ggtitle("Spatial Distribution - Occurrence Uncertainty") +
     ggplot2::xlab("Uncertainty (m)") +
     ggplot2::ylab("Frequency") +
-    ggplot2::theme_classic()
+    ggplot2::theme_classic() +
+    ggplot2::theme(plot.title = ggplot2::element_text(size = 11, face = "bold"))
   
   # ============================================================================
-  # SECTION 16: FILE OUTPUT
+  # SECTION 16: FILE OUTPUT (4-PAGE LANDSCAPE PDF)
   # ============================================================================
+  
+  msg("Saving output files...")
   
   # Create file paths with custom prefix
   pdf_path <- file.path(output_dir, paste0(output_prefix, "_output.pdf"))
   tif_path <- file.path(output_dir, paste0(output_prefix, "_map.tif"))
   csv_path <- file.path(output_dir, paste0(output_prefix, "_taxa.csv"))
   
-  # Save multi-page PDF with all plots and statistics
-  grDevices::pdf(pdf_path, onefile = TRUE)
-  print(p1)
-  print(p2)
-  print(p3)
-  print(p4)
+  # Save 4-page PDF (A4 landscape)
+  grDevices::pdf(pdf_path, width = 11.69, height = 8.27, onefile = TRUE)
+  
+  # Page 1: Quantile comparison (primary analysis)
+  gridExtra::grid.arrange(
+    p1_quant, p2_quant,
+    ncol = 2,
+    top = grid::textGrob("Page 1: Quantile Comparison (Primary Analysis)", 
+                         gp = grid::gpar(fontsize = 14, fontface = "bold"))
+  )
+  
+  # Page 2: Continuous comparison (raw data)
+  gridExtra::grid.arrange(
+    p1_cont, p2_cont,
+    ncol = 2,
+    top = grid::textGrob("Page 2: Continuous Scale (Raw Data View)", 
+                         gp = grid::gpar(fontsize = 14, fontface = "bold"))
+  )
+  
+  # Page 3: Data diagnostics
+  gridExtra::grid.arrange(
+    p3, p4,
+    ncol = 2,
+    top = grid::textGrob("Page 3: Data Diagnostics", 
+                         gp = grid::gpar(fontsize = 14, fontface = "bold"))
+  )
+  
+  # Page 4: Summary statistics
   grid::grid.draw(
     gridExtra::grid.arrange(
-      top = "Summary statistics",
+      top = grid::textGrob("Page 4: Summary Statistics", 
+                           gp = grid::gpar(fontsize = 14, fontface = "bold")),
       gridExtra::tableGrob(statistics_df)
     )
   )
+  
   grDevices::dev.off()
   
   # Save MRFI raster as GeoTIFF
@@ -1058,22 +1096,15 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
   utils::write.csv(taxa_list, row.names = FALSE, csv_path)
   
   msg(paste0("Done! Files saved to: ", output_dir))
+  msg("PDF structure: Page 1 (Quantile), Page 2 (Continuous), Page 3 (Diagnostics), Page 4 (Statistics)")
   
   # ============================================================================
   # SECTION 17: CONSOLE DISPLAY
   # ============================================================================
   
-  # Display plots in console
-  print(p1)
-  print(p2)
-  print(p3)
-  print(p4)
-  grid::grid.draw(
-    gridExtra::grid.arrange(
-      top = "Summary statistics",
-      gridExtra::tableGrob(statistics_df)
-    )
-  )
+  # Display quantile plots in console (primary analysis)
+  print(p1_quant)
+  print(p2_quant)
   
   # ============================================================================
   # SECTION 18: RETURN RESULTS
