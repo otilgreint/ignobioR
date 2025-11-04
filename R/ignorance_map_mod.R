@@ -790,24 +790,28 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
     mrfi_breaks_quant <- unique(mrfi_breaks_quant)
   }
   
-  # Richness quantile breaks
+  # Richness quantile breaks (9 total breaks: 0 + 8 quantiles from non-zero values)
   rich_values <- terra::values(rich_final, na.rm = TRUE)
-  rich_values <- rich_values[rich_values > 0]  # Exclude zeros for better distribution
-  n_unique_rich <- length(unique(rich_values))
+  rich_values_nonzero <- rich_values[rich_values > 0]  # Exclude zeros for quantile calculation
   
-  if (n_unique_rich >= 8) {
-    rich_breaks_quant <- stats::quantile(rich_values, 
-                                         probs = seq(0, 1, length.out = 9), 
+  if (length(rich_values_nonzero) > 0) {
+    # Calculate 8 breaks from non-zero values (length.out = 8, not 9!)
+    # This gives us the 8 quantile boundaries we need
+    rich_breaks_quant <- stats::quantile(rich_values_nonzero, 
+                                         probs = seq(0, 1, length.out = 8), 
                                          na.rm = TRUE)
     rich_breaks_quant <- unique(rich_breaks_quant)
-    # Add 0 at the beginning for the zero-richness cells
+    
+    # If we don't have enough unique values after removing duplicates, interpolate
+    if (length(rich_breaks_quant) < 8) {
+      rich_breaks_quant <- seq(min(rich_values_nonzero), max(rich_values_nonzero), length.out = 8)
+    }
+    
+    # Add 0 at the beginning: 0 + 8 breaks = 9 total breaks (matching MRFI)
     rich_breaks_quant <- c(0, rich_breaks_quant)
   } else {
-    rich_breaks_quant <- stats::quantile(rich_values, 
-                                         probs = seq(0, 1, length.out = n_unique_rich + 1), 
-                                         na.rm = TRUE)
-    rich_breaks_quant <- unique(rich_breaks_quant)
-    rich_breaks_quant <- c(0, rich_breaks_quant)
+    # Edge case: only zeros
+    rich_breaks_quant <- seq(0, max(rich_values), length.out = 9)
   }
   
   # Continuous breaks (9 values for consistency)
@@ -922,7 +926,7 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       limits = c(min(rich_breaks_quant), max(rich_breaks_quant)),
       na.value = "transparent",
       guide = ggplot2::guide_legend(
-        title = "Richness",
+        title = "N taxa",
         keyheight = grid::unit(1.2, "lines"),
         keywidth = grid::unit(1.2, "lines"),
         label.theme = ggplot2::element_text(size = 9),
@@ -954,17 +958,23 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       colour = "black",
       linewidth = 0.1
     ) +
-    ggplot2::scale_fill_distiller(
-      palette = "Spectral",
-      direction = -1,
-      limits = c(min(mrfi_breaks_cont), max(mrfi_breaks_cont)),
+    ggplot2::scale_fill_gradientn(
+      colors = rev(RColorBrewer::brewer.pal(9, "Spectral")),
+      limits = c(0, mrfi_max_val),
       breaks = mrfi_breaks_cont,
-      labels = round(mrfi_breaks_cont, 0)
+      labels = round(mrfi_breaks_cont, 0),
+      na.value = "transparent",
+      guide = ggplot2::guide_legend(
+        title = "IRFI",
+        keyheight = grid::unit(1.2, "lines"),
+        keywidth = grid::unit(1.2, "lines"),
+        label.theme = ggplot2::element_text(size = 9),
+        title.theme = ggplot2::element_text(size = 10, face = "bold")
+      )
     ) +
     ggplot2::ggtitle("MRFI - Continuous Scale") +
     ggplot2::xlab("Longitude") +
-    ggplot2::ylab("Latitude") +
-    ggplot2::labs(fill = "IRFI")
+    ggplot2::ylab("Latitude")
   
   p1_cont <- add_boundaries(p1_cont)
   
@@ -992,7 +1002,14 @@ ignorance_map_mod <- function(data_flor, site, year_study = NULL, excl_areas = N
       limits = c(0, rich_max_val),
       breaks = rich_breaks_cont,
       labels = round(rich_breaks_cont, 0),
-      guide = ggplot2::guide_legend(title = "Richness")
+      na.value = "transparent",
+      guide = ggplot2::guide_legend(
+        title = "N taxa",
+        keyheight = grid::unit(1.2, "lines"),
+        keywidth = grid::unit(1.2, "lines"),
+        label.theme = ggplot2::element_text(size = 9),
+        title.theme = ggplot2::element_text(size = 10, face = "bold")
+      )
     ) +
     ggplot2::ggtitle("Species Richness - Continuous Scale") +
     ggplot2::xlab("Longitude") +
