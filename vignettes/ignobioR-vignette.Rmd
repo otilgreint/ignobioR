@@ -1,0 +1,857 @@
+---
+title: "Analyzing Floristic Knowledge Gaps and Optimizing Field Sampling"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 3
+    fig_width: 7
+    fig_height: 5
+vignette: >
+  %\VignetteIndexEntry{Analyzing Floristic Knowledge Gaps and Optimizing Field Sampling}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  fig.height = 5,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# Introduction
+
+This vignette demonstrates how to use the **floristic ignorance analysis** toolkit to:
+
+1. **Identify knowledge gaps** in species occurrence data using Maps of Relative Floristic Ignorance (MRFI)
+2. **Predict species occurrence** using Virtual Floristic Lists (VFL)
+3. **Optimize field sampling** strategies to maximize survey efficiency
+
+The package implements the MRFI methodology, which acknowledges that all floristic records have spatial and temporal uncertainties. Rather than excluding poorly-sampled areas, MRFI shows all areas where data exists and uses an ignorance metric to indicate sampling quality.
+
+## Key Concepts
+
+### Relative Floristic Ignorance
+
+Floristic ignorance represents the **lack of botanical knowledge** in an area, accounting for:
+
+- **Spatial uncertainty**: GPS accuracy, vague locality descriptions, collector uncertainty
+- **Temporal decay**: Older records are less reliable due to habitat changes, taxonomic revisions, and species extinctions
+- **Sampling effort**: Areas with many recent, precise records have lower ignorance
+
+### The MRFI Philosophy
+
+Unlike traditional approaches that exclude areas with insufficient data, MRFI:
+
+- Shows **all areas** where floristic data exists
+- Uses **IRFI values** (Index of Relative Floristic Ignorance) to indicate sampling quality
+- Naturally handles **edge effects** through spatial uncertainty buffers
+- Supports **data-driven decisions** about where to focus future surveys
+
+# Installation and Setup
+
+```{r install, eval=FALSE}
+# Install from GitHub (example)
+# devtools::install_github("yourusername/yourpackage")
+
+# Load the package
+library(yourpackage)
+
+# Load required packages
+library(sf)
+library(terra)
+library(ggplot2)
+```
+
+```{r load-hidden, echo=FALSE}
+# Hidden: Load packages for vignette
+library(sf)
+library(terra)
+library(ggplot2)
+```
+
+# Workflow Overview
+
+The typical analysis workflow follows three stages:
+
+```
+1. MRFI Analysis → Identify knowledge gaps
+         ↓
+2. VFL Prediction → Estimate species occurrences
+         ↓
+3. Sampling Optimization → Plan efficient surveys
+```
+
+Let's walk through each stage with examples.
+
+# Stage 1: Map of Relative Floristic Ignorance
+
+## Data Requirements
+
+The `ignorance_map()` function requires:
+
+1. **Floristic data** (`data_flor`): A data frame with occurrence records
+   - `Taxon`: Species name (character)
+   - `Long`: Longitude in decimal degrees (numeric)
+   - `Lat`: Latitude in decimal degrees (numeric)
+   - `uncertainty`: Spatial uncertainty radius in meters (numeric)
+   - `year`: Year of collection (numeric)
+
+2. **Study area** (`site`): An sf polygon or SpatialPolygonsDataFrame
+
+3. **Optional exclusion areas** (`excl_areas`): Areas to exclude (e.g., water bodies, urban areas)
+
+## Basic Usage
+
+```{r mrfi-basic, eval=FALSE}
+# Load example data
+data(floratus)     # Floristic occurrence records
+data(park)         # Study area boundary
+data(unsuitablezone)  # Exclusion areas (e.g., lakes)
+
+# Create MRFI with basic parameters
+mrfi_result <- ignorance_map(
+  data_flor = floratus,
+  site = park,
+  excl_areas = unsuitablezone,
+  tau = 20,        # 20% taxa loss per 100 years
+  cellsize = 2000  # 2km resolution
+)
+```
+
+### Understanding the Parameters
+
+- **`tau`**: Temporal decay parameter (0-100%)
+  - `tau = 0`: No temporal decay (all records equally weighted)
+  - `tau = 20`: 20% information loss per 100 years (recommended for stable habitats)
+  - `tau = 50`: 50% loss per 100 years (for rapidly changing environments)
+
+- **`cellsize`**: Raster resolution in meters
+  - Fine resolution (100-500m): Detailed local analysis, slower computation
+  - Medium resolution (1000-2000m): Regional analysis, good performance
+  - Coarse resolution (5000m+): Broad-scale patterns, fast computation
+
+## Interpreting Outputs
+
+The function returns a list with four components:
+
+```{r mrfi-outputs, eval=FALSE}
+# 1. MRFI raster - The ignorance map
+terra::plot(mrfi_result$MRFI, main = "Relative Floristic Ignorance")
+
+# 2. Species richness raster (without uncertainty)
+terra::plot(mrfi_result$RICH, main = "Species Richness")
+
+# 3. Uncertainty data for all records used
+head(mrfi_result$Uncertainties)
+
+# 4. Summary statistics
+print(mrfi_result$Statistics)
+```
+
+### Reading the MRFI Map
+
+**High IRFI values (red)** indicate:
+- Few species records
+- Old records (temporal decay)
+- Imprecise records (large spatial uncertainty)
+- **Priority areas for future surveys**
+
+**Low IRFI values (blue)** indicate:
+- Many species records
+- Recent records
+- Precise GPS locations
+- **Well-documented areas**
+
+## Advanced Options
+
+### Expanding the Analysis Area
+
+By default, MRFI analyzes only the original site boundary (edge effects are handled via uncertainty buffers). To analyze a larger region:
+
+```{r mrfi-buffer, eval=FALSE}
+# Expand analysis area by 5km beyond original site
+mrfi_expanded <- ignorance_map(
+  data_flor = floratus,
+  site = park,
+  tau = 20,
+  cellsize = 2000,
+  site_buffer = TRUE,
+  buffer_width = 5000  # Analyze site + 5km buffer zone
+)
+```
+
+### Fast Mode (No Coverage Weighting)
+
+For quick exploratory analysis with large datasets:
+
+```{r mrfi-fast, eval=FALSE}
+# Faster computation (binary touch method)
+mrfi_fast <- ignorance_map(
+  data_flor = floratus,
+  site = park,
+  tau = 20,
+  cellsize = 2000,
+  use_coverage_weighting = FALSE  # Faster, slightly less accurate
+)
+```
+
+### Custom Output Location
+
+```{r mrfi-output, eval=FALSE}
+# Save outputs to specific directory with custom prefix
+mrfi_result <- ignorance_map(
+  data_flor = floratus,
+  site = park,
+  tau = 20,
+  cellsize = 2000,
+  output_dir = "~/Documents/MRFI_Results",
+  output_prefix = "MyStudyArea_2025"
+)
+# Creates: MyStudyArea_2025_output.pdf, MyStudyArea_2025_map.tif, etc.
+```
+
+## Output Files
+
+The function automatically generates:
+
+1. **PDF report** (`MRFI_output.pdf`): 4-page comprehensive analysis
+   - Page 1: Quantile comparison (primary analysis figure)
+   - Page 2: Continuous scale (raw data view)
+   - Page 3: Data diagnostics (temporal & spatial uncertainty histograms)
+   - Page 4: Summary statistics table
+
+2. **GeoTIFF raster** (`MRFI_map.tif`): For GIS integration
+
+3. **Taxa list** (`MRFI_taxa.csv`): All species included in analysis
+
+# Stage 2: Virtual Floristic List
+
+The Virtual Floristic List (VFL) predicts which species might occur in your study area based on spatiotemporal probabilities.
+
+## Basic Usage
+
+```{r vfl-basic, eval=FALSE}
+# Create VFL using same data as MRFI
+vfl_result <- virtual_list(
+  data_flor = floratus,
+  site = park,
+  tau = 30,  # Can use different tau than MRFI
+  excl_areas = unsuitablezone
+)
+```
+
+## Understanding the Probability Calculation
+
+The VFL uses the **inclusion-exclusion principle** to aggregate probabilities from multiple records:
+
+```
+For taxon with n records:
+P(taxon present) = P(R₁ ∪ R₂ ∪ ... ∪ Rₙ)
+                 = ΣP(Rᵢ) - ΣP(Rᵢ∩Rⱼ) + ...
+```
+
+Each record's probability considers:
+- **Spatial probability**: Fraction of uncertainty buffer overlapping study area
+- **Temporal probability**: Age-based decay using tau parameter
+
+### The `upperlimit` Parameter
+
+Controls computational complexity and accuracy:
+
+```{r vfl-upperlimit, eval=FALSE}
+# Fast exploratory analysis (recommended for initial runs)
+vfl_fast <- virtual_list(
+  data_flor = floratus,
+  site = park,
+  tau = 30,
+  upperlimit = 10  # Very fast, good accuracy
+)
+
+# Balanced approach (DEFAULT, recommended)
+vfl_balanced <- virtual_list(
+  data_flor = floratus,
+  site = park,
+  tau = 30,
+  upperlimit = 20  # Fast, very good accuracy
+)
+
+# High accuracy for publication (slower)
+vfl_accurate <- virtual_list(
+  data_flor = floratus,
+  site = park,
+  tau = 30,
+  upperlimit = 30  # Slow, excellent accuracy
+)
+```
+
+**Why limit records?** With n records, computation requires 2^n combinations:
+- 10 records → 1,024 combinations (fast)
+- 20 records → 1,048,576 combinations (manageable)
+- 30 records → 1,073,741,824 combinations (slow)
+
+## Filtering Results
+
+```{r vfl-filter, eval=FALSE}
+# Only include taxa with >5% probability
+vfl_filtered <- virtual_list(
+  data_flor = floratus,
+  site = park,
+  tau = 30,
+  min_probability = 5  # Filter unlikely taxa
+)
+
+# View high-probability species
+head(vfl_filtered$VFL)
+```
+
+## Interpreting VFL Output
+
+```{r vfl-interpret, eval=FALSE}
+# The VFL data frame contains:
+# - Taxon: Species name
+# - Estimated_Spatiotemporal_probability: Probability (%) of occurrence
+# - Number_of_records: Records used in calculation
+# - Max_probability: Highest single-record probability
+# - Min_probability: Lowest single-record probability
+
+# Species ranked by probability (highest first)
+print(vfl_result$VFL)
+
+# Summary statistics
+print(vfl_result$Statistics)
+
+# Diagnostic plots
+print(vfl_result$Plots$prob_histogram)
+print(vfl_result$Plots$temporal_distribution)
+```
+
+## Practical Applications
+
+### Checklist Validation
+
+Compare your field checklist against VFL predictions:
+
+```{r vfl-checklist, eval=FALSE}
+# Your observed species
+field_checklist <- c("Species_A", "Species_B", "Species_C")
+
+# Species predicted but not observed (search priorities)
+predicted_not_observed <- vfl_result$VFL$Taxon[
+  !vfl_result$VFL$Taxon %in% field_checklist &
+  vfl_result$VFL$Estimated_Spatiotemporal_probability > 10
+]
+
+print("Priority species to search for:")
+print(predicted_not_observed)
+```
+
+### Survey Completeness
+
+```{r vfl-completeness, eval=FALSE}
+# How many species should you expect?
+high_prob_species <- sum(vfl_result$VFL$Estimated_Spatiotemporal_probability > 50)
+medium_prob_species <- sum(vfl_result$VFL$Estimated_Spatiotemporal_probability > 25)
+
+cat("Expected species (>50% probability):", high_prob_species, "\n")
+cat("Possible species (>25% probability):", medium_prob_species, "\n")
+```
+
+# Stage 3: Sampling Optimization
+
+Use MRFI to guide where to place new survey plots, maximizing environmental heterogeneity and targeting understudied areas.
+
+## Data Requirements
+
+The `sampleboost()` function requires:
+
+1. **NDVI raster** (or other environmental proxy): Represents habitat heterogeneity
+2. **MRFI raster**: From `ignorance_map()` output
+3. **Study area boundary**: Same as used for MRFI
+4. **Optional DEM**: For elevation-aware sampling
+
+## Basic Usage
+
+```{r boost-basic, eval=FALSE}
+# Load environmental data
+ndvi <- terra::rast("path/to/ndvi.tif")
+
+# Optimize sampling using MRFI output
+sampling_result <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,  # Use MRFI output
+  site = park,
+  excl_areas = unsuitablezone,
+  nplot = 50,          # Number of plots
+  plot_radius = 5.64,  # 5.64m radius = ~100m² plots
+  perm = 100           # Test 100 configurations
+)
+```
+
+## Understanding the Optimization
+
+The function scores each configuration based on:
+
+1. **NDVI variance** (environmental heterogeneity)
+   - Between-plot variance: Samples span different habitats
+   - Within-plot variance: Individual plots capture local heterogeneity
+
+2. **Mean ignorance** (prioritizes understudied areas)
+   - Places plots in high-IRFI regions
+
+3. **Spatial dispersion** (avoids clustering)
+   - Uses mean nearest neighbor distance
+
+4. **DEM variance** (optional, topographic heterogeneity)
+
+### Weighting Objectives
+
+```{r boost-weights, eval=FALSE}
+# Emphasize ignorance (focus on knowledge gaps)
+sampling_priority_ignorance <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,
+  site = park,
+  nplot = 50,
+  plot_radius = 10,
+  perm = 100,
+  ndvi.weight = 1,
+  igno.weight = 3,    # 3x weight on ignorance
+  dist.weight = 1
+)
+
+# Emphasize environmental heterogeneity
+sampling_priority_habitat <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,
+  site = park,
+  nplot = 50,
+  plot_radius = 10,
+  perm = 100,
+  ndvi.weight = 3,    # 3x weight on NDVI
+  igno.weight = 1,
+  dist.weight = 1
+)
+```
+
+## Adding Topographic Constraints
+
+```{r boost-dem, eval=FALSE}
+# Load DEM
+dem <- terra::rast("path/to/dem.tif")
+
+# Optimize with elevation and slope constraints
+sampling_with_topo <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,
+  site = park,
+  nplot = 50,
+  plot_radius = 20,   # Larger plots (~1,257m²)
+  perm = 100,
+  dem = dem,
+  slope_max = 30,     # Exclude plots on slopes >30°
+  dem.weight = 1.5    # Weight for elevation variance
+)
+```
+
+## Sampling Strategies
+
+```{r boost-strategies, eval=FALSE}
+# Random sampling (default, most flexible)
+result_random <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,
+  site = park,
+  samp_strategy = "random",
+  nplot = 50,
+  plot_radius = 10,
+  perm = 100
+)
+
+# Regular grid sampling
+result_regular <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,
+  site = park,
+  samp_strategy = "regular",
+  nplot = 50,
+  plot_radius = 10,
+  perm = 100
+)
+
+# Hexagonal sampling
+result_hexagonal <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,
+  site = park,
+  samp_strategy = "hexagonal",
+  nplot = 50,
+  plot_radius = 10,
+  perm = 100
+)
+```
+
+## Extraction Methods
+
+The function automatically selects the best extraction method:
+
+```{r boost-extraction, eval=FALSE}
+# Automatic selection (recommended)
+result_auto <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,
+  site = park,
+  nplot = 50,
+  plot_radius = 10,
+  perm = 100,
+  extract_method = "auto"  # Chooses based on plot size vs raster resolution
+)
+
+# Manual override for point extraction (faster)
+result_point <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,
+  site = park,
+  nplot = 50,
+  plot_radius = 10,
+  perm = 100,
+  extract_method = "point"  # Sample at plot center only
+)
+
+# Manual override for area extraction (more accurate)
+result_area <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi_result$MRFI,
+  site = park,
+  nplot = 50,
+  plot_radius = 10,
+  perm = 100,
+  extract_method = "area"   # Sample all pixels within plot
+)
+```
+
+## Using the Results
+
+### Field Sheet
+
+```{r boost-fieldsheet, eval=FALSE}
+# The field sheet CSV contains GPS coordinates
+field_sheet <- read.csv("SampleBoost_field-sheet.csv")
+print(field_sheet)
+
+# Columns:
+# - Plot_ID: Unique identifier (e.g., PLOT_001)
+# - Longitude_WGS84: GPS longitude
+# - Latitude_WGS84: GPS latitude
+# - NDVI: Environmental value at plot
+# - Ignorance: IRFI value at plot
+# - Elevation_m: Elevation (if DEM provided)
+# - Notes: Empty column for field notes
+```
+
+### Accessing Best Solution
+
+```{r boost-solution, eval=FALSE}
+# Best sampling configuration
+best_plots <- sampling_result$best_solution_sf
+
+# Export as shapefile for GPS/GIS
+sf::st_write(best_plots, "sampling_plots.shp")
+
+# Create buffers for visualization
+plot_buffers <- sf::st_buffer(best_plots, dist = plot_radius)
+sf::st_write(plot_buffers, "sampling_plots_buffers.shp")
+```
+
+### Comparing Solutions
+
+```{r boost-compare, eval=FALSE}
+# View all tested configurations
+all_scores <- sampling_result$aggregated_scores
+
+# Best 10 configurations
+top_10 <- head(all_scores[order(-all_scores$final_score), ], 10)
+print(top_10)
+
+# Plot score distribution
+hist(all_scores$final_score, 
+     main = "Distribution of Configuration Scores",
+     xlab = "Final Score", col = "lightblue")
+```
+
+# Complete Workflow Example
+
+Here's a full analysis from start to finish:
+
+```{r complete-workflow, eval=FALSE}
+# ============================================================================
+# 1. LOAD DATA
+# ============================================================================
+
+library(yourpackage)
+library(sf)
+library(terra)
+
+# Floristic data
+data(floratus)
+
+# Study area
+data(park)
+
+# Exclusion zones (lakes, urban areas)
+data(unsuitablezone)
+
+# Environmental data
+ndvi <- terra::rast("data/ndvi.tif")
+dem <- terra::rast("data/dem.tif")
+
+# ============================================================================
+# 2. IDENTIFY KNOWLEDGE GAPS (MRFI)
+# ============================================================================
+
+mrfi <- ignorance_map(
+  data_flor = floratus,
+  site = park,
+  excl_areas = unsuitablezone,
+  year_study = 2025,
+  tau = 20,
+  cellsize = 1000,
+  output_prefix = "Park_MRFI_2025"
+)
+
+# Review outputs
+terra::plot(mrfi$MRFI, main = "Knowledge Gaps")
+print(mrfi$Statistics)
+
+# ============================================================================
+# 3. PREDICT SPECIES OCCURRENCE (VFL)
+# ============================================================================
+
+vfl <- virtual_list(
+  data_flor = floratus,
+  site = park,
+  excl_areas = unsuitablezone,
+  year_study = 2025,
+  tau = 30,
+  upperlimit = 20,
+  min_probability = 5,
+  output_prefix = "Park_VFL_2025"
+)
+
+# High-probability species to search for
+priority_species <- vfl$VFL[vfl$VFL$Estimated_Spatiotemporal_probability > 50, ]
+print(priority_species)
+
+# ============================================================================
+# 4. OPTIMIZE FIELD SAMPLING
+# ============================================================================
+
+sampling <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi$MRFI,
+  site = park,
+  excl_areas = unsuitablezone,
+  nplot = 50,
+  plot_radius = 10,  # 314m² plots
+  perm = 200,        # Test 200 configurations
+  dem = dem,
+  slope_max = 35,
+  ndvi.weight = 1,
+  igno.weight = 2,   # Emphasize understudied areas
+  dist.weight = 1,
+  dem.weight = 1,
+  output_prefix = "Park_Sampling_2025"
+)
+
+# ============================================================================
+# 5. EXPORT FOR FIELDWORK
+# ============================================================================
+
+# Best sampling points
+sf::st_write(sampling$best_solution_sf, "fieldwork/sampling_points.gpx", 
+             driver = "GPX", delete_dsn = TRUE)
+
+# Field sheet for data recording
+field_data <- read.csv("Park_Sampling_2025_field-sheet.csv")
+write.csv(field_data, "fieldwork/field_datasheet.csv", row.names = FALSE)
+
+# Priority species list
+write.csv(priority_species, "fieldwork/priority_species.csv", row.names = FALSE)
+
+# ============================================================================
+# 6. CREATE SUMMARY MAP
+# ============================================================================
+
+library(ggplot2)
+
+summary_map <- ggplot() +
+  tidyterra::geom_spatraster(data = mrfi$MRFI) +
+  scale_fill_distiller(palette = "Spectral", name = "IRFI", 
+                       na.value = "transparent", direction = -1) +
+  geom_sf(data = sampling$best_solution_sf, color = "red", size = 3) +
+  geom_sf(data = park, fill = NA, color = "black", linewidth = 1) +
+  ggtitle("Survey Plan: 50 plots targeting knowledge gaps") +
+  theme_minimal()
+
+ggsave("fieldwork/survey_plan_map.pdf", summary_map, width = 10, height = 8)
+```
+
+# Tips and Best Practices
+
+## Choosing Parameters
+
+### Tau (Temporal Decay)
+
+- **Conservative (tau = 10-20)**: Stable habitats, long-lived species
+- **Moderate (tau = 30-40)**: Mixed environments, moderate disturbance
+- **Aggressive (tau = 50-60)**: Rapidly changing habitats, ephemeral species
+
+### Cell Size
+
+Consider:
+- Study area size (larger areas → coarser resolution)
+- GPS accuracy of records (match resolution to data quality)
+- Computational resources (finer resolution = longer processing)
+
+### Number of Plots
+
+- Small sites (<10 km²): 20-50 plots
+- Medium sites (10-100 km²): 50-100 plots
+- Large sites (>100 km²): 100-200+ plots
+
+### Permutations
+
+- Quick test: 50-100 permutations
+- Standard analysis: 100-500 permutations
+- Publication quality: 500-1000+ permutations
+
+## Data Quality
+
+### Spatial Uncertainty
+
+Estimate uncertainty conservatively:
+- Modern GPS: 5-10m
+- Smartphone GPS: 10-20m
+- Older GPS: 20-50m
+- Map-based localities: 100-1000m
+- Vague descriptions: 1000-5000m
+
+### Temporal Coverage
+
+- Aim for records spanning multiple decades
+- More recent records generally more valuable
+- Historical records still useful for long-term change detection
+
+## Computational Performance
+
+### For Large Datasets
+
+```{r performance-tips, eval=FALSE}
+# 1. Use coarser resolution
+mrfi_fast <- ignorance_map(
+  data_flor = large_dataset,
+  site = large_area,
+  cellsize = 5000,  # 5km instead of 1km
+  use_coverage_weighting = FALSE
+)
+
+# 2. Reduce VFL upperlimit
+vfl_fast <- virtual_list(
+  data_flor = large_dataset,
+  site = large_area,
+  upperlimit = 10  # Instead of 20
+)
+
+# 3. Fewer sampling permutations initially
+sampling_test <- sampleboost(
+  ndvi = ndvi,
+  ignorance = mrfi$MRFI,
+  site = large_area,
+  nplot = 100,
+  plot_radius = 10,
+  perm = 50  # Quick test, then increase
+)
+```
+
+### Parallelization
+
+For extremely large analyses, consider splitting the study area into smaller regions and processing in parallel.
+
+# Troubleshooting
+
+## Common Issues
+
+### No overlapping points
+
+```
+Error: No occurrence buffers intersect the study area
+```
+
+**Solution**: Check coordinate reference systems and coordinates:
+```{r troubleshoot-crs, eval=FALSE}
+# Check CRS
+sf::st_crs(site)
+head(floratus[, c("Long", "Lat")])
+
+# Verify overlap visually
+plot(sf::st_geometry(site))
+points(floratus$Long, floratus$Lat, col = "red", pch = 20)
+```
+
+### Memory issues
+
+```
+Error: cannot allocate vector of size X GB
+```
+
+**Solution**: Reduce resolution or use sampling:
+```{r troubleshoot-memory, eval=FALSE}
+# Increase cellsize
+mrfi <- ignorance_map(data_flor, site, cellsize = 5000)
+
+# Or subset data geographically
+subset_data <- floratus[sample(nrow(floratus), 10000), ]
+```
+
+### Slow VFL computation
+
+```
+Warning: Large upperlimit (>35) may cause very slow computation
+```
+
+**Solution**: Reduce upperlimit or filter well-sampled taxa:
+```{r troubleshoot-slow, eval=FALSE}
+# Faster computation
+vfl <- virtual_list(data_flor, site, upperlimit = 15)
+
+# Or pre-filter to taxa with <30 records
+taxa_counts <- table(floratus$Taxon)
+floratus_filtered <- floratus[floratus$Taxon %in% names(taxa_counts[taxa_counts < 30]), ]
+```
+
+# Citation
+
+If you use this package in your research, please cite:
+
+```
+[Your citation information here]
+```
+
+# Additional Resources
+
+- **Package documentation**: `?ignorance_map`, `?virtual_list`, `?sampleboost`
+- **MRFI methodology**: [Reference papers]
+- **GitHub repository**: [URL]
+- **Issue tracker**: [URL]
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
