@@ -142,7 +142,7 @@
 
 ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
                           CRS.new = 3035, tau, cellsize, verbose = TRUE,
-                          check_overlap = TRUE, output_dir = getwd(),
+                          check_overlap = TRUE, output_dir = file.path(getwd(), "output"),
                           output_prefix = "MRFI", site_buffer = FALSE,
                           buffer_width = NULL,
                           mask_method = "touches",
@@ -432,6 +432,25 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
   
   msg(paste0("  Template extent expanded by ", cellsize, "m on all sides for complete coverage."))
   
+  # Check if cellsize is appropriate for study area
+  site_area <- as.numeric(sf::st_area(site_proj_processing))
+  cell_area <- cellsize^2
+  n_cells_approx <- site_area / cell_area
+  
+  if (n_cells_approx < 100) {
+    site_dims <- c(
+      site_bbox["xmax"] - site_bbox["xmin"],
+      site_bbox["ymax"] - site_bbox["ymin"]
+    )
+    min_dim <- min(site_dims)
+    
+    warning(paste0("Cell size (", cellsize, "m) is very large for this study area. ",
+                   "Expected ~", round(n_cells_approx), " cells covering ", 
+                   round(site_area / 1e6, 2), " km². ",
+                   "Consider reducing cellsize to improve spatial resolution. ",
+                   "Suggested maximum: ", round(min_dim / 10), "m (10% of smallest dimension)."))
+  }
+  
   # ============================================================================
   # SECTION 8: SPECIES RICHNESS MAP CALCULATION
   # ============================================================================
@@ -576,10 +595,18 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
   # ============================================================================
   
   if (has_exclusions) {
-    msg("Removing excluded areas from final output...")
-    excl_mask_r <- terra::rasterize(terra::vect(excl_proj), r_template, field = 1)
-    mrfi_final[!is.na(excl_mask_r)] <- NA
-    rich_final[!is.na(excl_mask_r)] <- NA
+    msg("Removing cells that are ≥95% within excluded areas...")
+    excl_mask_r <- terra::rasterize(terra::vect(excl_proj), r_template, cover = TRUE)
+    
+    # Identify cells where exclusion coverage is ≥95%
+    cells_to_remove <- !is.na(excl_mask_r) & excl_mask_r >= 0.95
+    
+    # Remove only those cells
+    mrfi_final[cells_to_remove] <- NA
+    rich_final[cells_to_remove] <- NA
+    
+    n_removed <- sum(terra::values(cells_to_remove), na.rm = TRUE)
+    msg(paste0("  Removed ", n_removed, " cells (≥95% in exclusion areas)"))
   }
   
   # ============================================================================
@@ -605,7 +632,7 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
     Value = c(
       as.character(start_time), as.character(end_time),
       round(as.numeric(end_time - start_time, units = "secs")),
-      if (use_buffer) round(buffer_distance, 1) else "None (edge effects handled via uncertainty)",
+      if (use_buffer) round(buffer_distance, 1) else "None",
       if (use_buffer) paste0("Original site + ", round(buffer_distance, 1), "m expansion") else "Original site only",
       mask_method,
       if (use_coverage_weighting) "Enabled (accurate)" else "Disabled (fast)",
@@ -678,11 +705,11 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
                               linewidth = 1, inherit.aes = FALSE)
     if (use_buffer && !is.null(site_proj_buffered)) {
       p <- p + ggplot2::geom_sf(data = site_proj_buffered, fill = NA, color = "black", 
-                                linewidth = 1, linetype = "dashed", inherit.aes = FALSE)
+                                linewidth = 0.8, linetype = "dashed", inherit.aes = FALSE)
     }
     if (has_exclusions && !is.null(excl_plot)) {
-      p <- p + ggplot2::geom_sf(data = excl_plot, fill = NA, color = "black", 
-                                linewidth = 0.5, linetype = "dotted", inherit.aes = FALSE)
+      p <- p + ggplot2::geom_sf(data = excl_plot, fill = "gray", color = "black", 
+                                linewidth = 0.5, linetype = "dotted", inherit.aes = FALSE, alpha = 0.3)
     }
     return(p)
   }
@@ -699,7 +726,7 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
     ggplot2::scale_fill_gradientn(
       colors = rev(RColorBrewer::brewer.pal(9, "Spectral")),
       values = scales::rescale(mrfi_breaks_quant),
-      breaks = mrfi_breaks_quant, labels = round(mrfi_breaks_quant, 0),
+      breaks = mrfi_breaks_quant, labels = round(mrfi_breaks_quant, 1),
       limits = c(min(mrfi_breaks_quant), max(mrfi_breaks_quant)),
       na.value = "transparent",
       guide = ggplot2::guide_legend(title = "IRFI", keyheight = grid::unit(1.2, "lines"),
@@ -723,7 +750,7 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
     ggplot2::scale_fill_gradientn(
       colors = RColorBrewer::brewer.pal(9, "Spectral"),
       values = scales::rescale(rich_breaks_quant),
-      breaks = rich_breaks_quant, labels = round(rich_breaks_quant, 0),
+      breaks = rich_breaks_quant, labels = round(rich_breaks_quant, 1),
       limits = c(min(rich_breaks_quant), max(rich_breaks_quant)),
       na.value = "transparent",
       guide = ggplot2::guide_legend(title = "N taxa", keyheight = grid::unit(1.2, "lines"),
@@ -747,7 +774,7 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
     ggplot2::scale_fill_gradientn(
       colors = rev(RColorBrewer::brewer.pal(9, "Spectral")),
       limits = c(0, mrfi_max_val),
-      breaks = mrfi_breaks_cont, labels = round(mrfi_breaks_cont, 0),
+      breaks = mrfi_breaks_cont, labels = round(mrfi_breaks_cont, 1),
       na.value = "transparent",
       guide = ggplot2::guide_legend(title = "IRFI", keyheight = grid::unit(1.2, "lines"),
                                     keywidth = grid::unit(1.2, "lines"),
@@ -770,7 +797,7 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
     ggplot2::scale_fill_gradientn(
       colors = RColorBrewer::brewer.pal(9, "Spectral"),
       limits = c(0, rich_max_val),
-      breaks = rich_breaks_cont, labels = round(rich_breaks_cont, 0),
+      breaks = rich_breaks_cont, labels = round(rich_breaks_cont, 1),
       na.value = "transparent",
       guide = ggplot2::guide_legend(title = "N taxa", keyheight = grid::unit(1.2, "lines"),
                                     keywidth = grid::unit(1.2, "lines"),

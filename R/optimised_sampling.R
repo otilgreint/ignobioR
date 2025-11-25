@@ -171,7 +171,7 @@ sampleboost <- function(ndvi, ignorance, site, excl_areas = NULL,
                         ndvi.weight = 1, igno.weight = 1, dist.weight = 1,
                         dem = NULL, dem.weight = 1, slope_max = NULL,
                         extract_method = "auto", within_var_weight = 0.5,
-                        verbose = TRUE, output_dir = getwd(), 
+                        verbose = TRUE, output_dir = file.path(getwd(), "output"), 
                         output_prefix = "SampleBoost") {
   
   # ============================================================================
@@ -582,11 +582,20 @@ sampleboost <- function(ndvi, ignorance, site, excl_areas = NULL,
   
   msg("Creating outputs...")
   
+  # Clip exclusion areas to site boundary for clean visualization
+  excl_plot <- NULL
+  if (has_exclusions) {
+    excl_plot <- sf::st_intersection(excl_proj, site_proj)
+    if (length(excl_plot) == 0 || all(sf::st_is_empty(excl_plot))) {
+      excl_plot <- NULL
+    }
+  }
+  
   # Helper function to add boundaries and exclusion areas to plots
   add_boundaries <- function(p) {
     p <- p + ggplot2::geom_sf(data = site_proj, fill = NA, color = "black", linewidth = 1, inherit.aes = FALSE)
-    if (has_exclusions) {
-      p <- p + ggplot2::geom_sf(data = excl_proj, fill = "lightgray", color = "gray50", 
+    if (has_exclusions && !is.null(excl_plot)) {
+      p <- p + ggplot2::geom_sf(data = excl_plot, fill = "gray", color = "black", 
                                 linewidth = 0.5, linetype = "dotted", inherit.aes = FALSE, alpha = 0.3)
     }
     return(p)

@@ -100,7 +100,7 @@ virtual_list <- function(data_flor, site, year_study = NULL,
                          min_probability = 0,
                          verbose = TRUE,
                          check_overlap = TRUE,
-                         output_dir = getwd(),
+                         output_dir = file.path(getwd(), "output"),
                          output_prefix = "VFL") {
   
   # ============================================================================

@@ -2,26 +2,35 @@
 #'
 #' @description
 #' Generates an optimized sampling order for field plots based on environmental 
-#' diversity (NDVI, DEM) to maximize species accumulation efficiency. Can operate 
-#' with or without spatial clustering for logistical efficiency in large study areas.
+#' diversity (NDVI, DEM) to maximize species accumulation efficiency. Can optionally
+#' work within pre-defined Operational Geographic Units (OGUs) for field logistics.
 #'
 #' @param best_solution_sf An sf object from sampleboost() containing plot locations 
 #'   and environmental data (must have columns: ndvi_mean, and optionally elevation)
-#' @param n_clusters Integer or "auto". NULL = no clustering (pure diversity ordering).
-#'   Integer = exact number of clusters. "auto" = suggest 2, 3, and 4 cluster scenarios.
-#' @param method Character. Clustering method: "spatial" (k-means on coordinates), 
-#'   "elevation" (elevation-based zones, requires DEM), or "auto" (try both if DEM available)
+#' @param ogus Optional sf polygon object defining Operational Geographic Units (OGUs).
+#'   If provided, plots are assigned to OGUs via spatial intersection, and ordering
+#'   is done separately within each OGU. OGUs are typically pre-defined study area
+#'   zones (e.g., "North Valley", "South Ridge") based on ecological, logistical,
+#'   or administrative criteria.
+#' @param ogu_id_col Character. Name of column in `ogus` containing OGU names/identifiers
+#'   (default = "OGU"). Ignored if `ogus` is NULL.
 #' @param ndvi_weight Numeric. Weight for NDVI in environmental distance calculation (default = 1)
 #' @param dem_weight Numeric. Weight for elevation in environmental distance calculation (default = 0.5)
-#' @param start_plot Integer or "auto". Plot ID to start from (default = 1), or "auto" 
-#'   to automatically select most environmentally extreme plot
+#' @param start_plot Can be:
+#'   \itemize{
+#'     \item "auto" (default): Automatically selects most environmentally extreme plot in each OGU
+#'     \item "centroid": Selects plot closest to environmental centroid (most "average" plot) - useful if starting from accessible center
+#'     \item Integer: Single plot ID to start from (if no OGUs)
+#'     \item Named vector: Starting plot ID for each OGU, e.g. c("North" = 5, "South" = 12)
+#'   }
 #' @param verbose Logical. Print progress messages (default = TRUE)
 #' @param output_dir Character. Directory for output files (default = working directory)
 #' @param output_prefix Character. Prefix for output filenames (default = "SamplingOrder")
 #'
 #' @return A list containing:
 #' \itemize{
-#'   \item{ordered_plots}{ sf object with sampling_order and cluster columns added}
+#'   \item{ordered_plots}{ sf object with sampling_order and OGU columns added}
+#'   \item{field_ready}{ Data frame with complete field information}
 #'   \item{env_distance_matrix}{ Environmental distance matrix between all plots}
 #'   \item{summary}{ Data frame with ordering statistics}
 #' }
@@ -29,12 +38,33 @@
 #' Additionally, two files are automatically saved to output_dir:
 #' \itemize{
 #'   \item{[prefix]_field-ready.csv}{ Complete field sheet with Plot_ID, Sampling_Order, 
-#'   coordinates (lat/lon), NDVI, elevation, and cluster info - everything in one file}
+#'   OGU (if applicable), coordinates (lat/lon), NDVI, elevation - everything in one file}
 #'   \item{[prefix]_summary.txt}{ Summary statistics and field instructions}
 #' }
+#'
+#' @section OGU Format:
+#' The `ogus` parameter should be an sf object with POLYGON or MULTIPOLYGON geometry containing:
+#' \itemize{
+#'   \item **Geometry**: Polygon boundaries defining each OGU zone
+#'   \item **ID column**: Character or factor column with OGU names (e.g., "North_Valley", "Lake_Shore")
+#'   \item **CRS**: Must have a valid CRS (will be matched to plot CRS automatically)
+#' }
 #' 
-#' If n_clusters = "auto", returns a list of scenarios instead of a single result,
-#' and no files are saved.
+#' **Example OGU creation:**
+#' \preformatted{
+#' # From shapefile
+#' ogus <- st_read("study_zones.shp")
+#' 
+#' # Or create manually
+#' library(sf)
+#' north <- st_polygon(list(matrix(c(x_coords, y_coords), ncol=2)))
+#' south <- st_polygon(list(matrix(c(x_coords2, y_coords2), ncol=2)))
+#' ogus <- st_sf(
+#'   OGU = c("North", "South"),
+#'   geometry = st_sfc(north, south),
+#'   crs = 3035
+#' )
+#' }
 #'
 #' @details
 #' **Ordering Algorithm (Maximin Diversity)**:
@@ -45,18 +75,16 @@
 #' **Environmental Distance**: Euclidean distance in standardized environmental space:
 #' \deqn{d_{ij} = \sqrt{w_{ndvi} \times (NDVI_i - NDVI_j)^2 + w_{dem} \times (DEM_i - DEM_j)^2}}
 #' 
-#' **Clustering Options**:
-#' \itemize{
-#'   \item{No clustering}{ Pure diversity-based ordering across all plots}
-#'   \item{Spatial clustering}{ k-means on X,Y coordinates to minimize travel distance}
-#'   \item{Elevation clustering}{ Natural breaks in elevation for accessibility}
-#' }
+#' **With OGUs**:
+#' If OGUs are provided, maximin diversity ordering is applied separately within each
+#' OGU. The user decides which OGU to sample first based on field logistics (accessibility,
+#' weather, permits, etc.). Each OGU gets its own sampling sequence starting from 1.
 #' 
-#' Within each cluster, maximin diversity ordering is applied. User selects which 
-#' cluster to sample first based on field logistics.
+#' **Without OGUs**:
+#' Pure diversity-based ordering across all plots globally.
 #'
-#' @importFrom sf st_transform st_crs st_coordinates st_as_sf st_drop_geometry st_geometry st_sf
-#' @importFrom stats kmeans dist quantile
+#' @importFrom sf st_transform st_crs st_coordinates st_as_sf st_drop_geometry st_geometry st_sf st_intersects st_join
+#' @importFrom stats dist
 #' @importFrom utils write.csv
 #' @export
 #'
@@ -65,35 +93,48 @@
 #' # Run sampleboost first
 #' result <- sampleboost(ndvi, ignorance, site, nplot = 50, plot_radius = 20, perm = 100)
 #' 
-#' # Simple diversity ordering - creates field-ready CSV
+#' # Simple diversity ordering (no OGUs) - auto selects most extreme plot
 #' order1 <- sampling_order(result$best_solution_sf)
 #' 
-#' # With spatial clustering (3 clusters)
-#' order2 <- sampling_order(result$best_solution_sf, n_clusters = 3, method = "spatial")
+#' # Start from most "average" plot (closest to centroid) - useful for accessible center
+#' order2 <- sampling_order(result$best_solution_sf, start_plot = "centroid")
 #' 
-#' # Suggest multiple scenarios (no files saved - for comparison only)
-#' scenarios <- sampling_order(result$best_solution_sf, n_clusters = "auto")
-#' 
-#' # Pick best and save final outputs
-#' final <- sampling_order(
+#' # With user-defined OGUs - auto selects most extreme in each OGU
+#' my_zones <- st_read("study_zones.shp")
+#' order3 <- sampling_order(
 #'   result$best_solution_sf, 
-#'   n_clusters = 3,
-#'   output_dir = "~/fieldwork",
-#'   output_prefix = "Final_Order"
+#'   ogus = my_zones,
+#'   ogu_id_col = "zone_name"
 #' )
 #' 
-#' # With elevation-based clustering (requires DEM in original sampleboost)
-#' order3 <- sampling_order(result$best_solution_sf, n_clusters = 3, method = "elevation")
+#' # Specify starting plot for each OGU (based on access points!)
+#' # E.g., Plot 5 is near north parking, Plot 23 is near south trail
+#' order4 <- sampling_order(
+#'   result$best_solution_sf, 
+#'   ogus = my_zones,
+#'   ogu_id_col = "zone_name",
+#'   start_plot = c("North_Valley" = 5, "South_Ridge" = 23, "Lake_Shore" = 12)
+#' )
+#' 
+#' # Custom output location
+#' final <- sampling_order(
+#'   result$best_solution_sf, 
+#'   ogus = my_zones,
+#'   ogu_id_col = "zone_name",
+#'   start_plot = c("North_Valley" = 5, "South_Ridge" = 23),
+#'   output_dir = "~/fieldwork",
+#'   output_prefix = "LakeVico_2025"
+#' )
 #' }
 
 sampling_order <- function(best_solution_sf, 
-                           n_clusters = NULL, 
-                           method = "auto",
+                           ogus = NULL,
+                           ogu_id_col = "OGU",
                            ndvi_weight = 1, 
                            dem_weight = 0.5,
-                           start_plot = 1,
+                           start_plot = "auto",
                            verbose = TRUE,
-                           output_dir = getwd(),
+                           output_dir = file.path(getwd(), "output"),
                            output_prefix = "SamplingOrder") {
   
   # ============================================================================
@@ -157,16 +198,32 @@ sampling_order <- function(best_solution_sf,
   
   has_dem <- "elevation" %in% names(best_solution_sf) && !all(is.na(best_solution_sf$elevation))
   
-  if (method == "elevation" && !has_dem) {
-    stop("method='elevation' requires DEM data (elevation column in best_solution_sf)")
-  }
-  
   n_plots <- nrow(best_solution_sf)
   
   # Create Plot_ID if it doesn't exist
   if (!"Plot_ID" %in% names(best_solution_sf)) {
     best_solution_sf$Plot_ID <- 1:n_plots
     msg("  Created Plot_ID column (1 to ", n_plots, ")")
+  }
+  
+  # Validate OGUs if provided
+  if (!is.null(ogus)) {
+    if (!inherits(ogus, "sf")) {
+      stop("ogus must be an sf object with polygon geometry")
+    }
+    
+    if (!ogu_id_col %in% names(ogus)) {
+      stop("Column '", ogu_id_col, "' not found in ogus object.\n",
+           "Available columns: ", paste(names(ogus)[names(ogus) != attr(ogus, "sf_column")], collapse = ", "))
+    }
+    
+    # Ensure CRS match
+    if (!identical(sf::st_crs(ogus), sf::st_crs(best_solution_sf))) {
+      msg("  Transforming OGUs to match plot CRS...")
+      ogus <- sf::st_transform(ogus, sf::st_crs(best_solution_sf))
+    }
+    
+    msg("  OGUs provided: ", paste(unique(ogus[[ogu_id_col]]), collapse = ", "))
   }
   
   # Extract environmental data
@@ -203,172 +260,162 @@ sampling_order <- function(best_solution_sf,
   msg(paste0("  Mean environmental distance: ", round(mean(env_matrix[env_matrix > 0]), 3)))
   
   # ============================================================================
-  # SECTION 3: HANDLE AUTO-SCENARIOS
+  # SECTION 3: ASSIGN PLOTS TO OGUs (IF PROVIDED)
   # ============================================================================
   
-  if (!is.null(n_clusters) && n_clusters == "auto") {
-    msg("Generating multiple clustering scenarios...")
+  ogu_assignments <- rep("All_Plots", n_plots)  # Default: single group
+  
+  if (!is.null(ogus)) {
+    msg("Assigning plots to OGUs via spatial intersection...")
     
-    scenarios <- list()
+    # Spatial join to assign plots to OGUs
+    plots_with_ogus <- sf::st_join(best_solution_sf, ogus[ogu_id_col], 
+                                   join = sf::st_intersects, left = TRUE)
     
-    # No clustering
-    scenarios$no_clusters <- sampling_order(
-      best_solution_sf, n_clusters = NULL, method = method,
-      ndvi_weight = ndvi_weight, dem_weight = dem_weight,
-      start_plot = start_plot, verbose = FALSE,
-      output_dir = tempdir(), output_prefix = "temp"
-    )
+    ogu_assignments <- plots_with_ogus[[ogu_id_col]]
     
-    # 2, 3, 4 spatial clusters
-    for (k in 2:4) {
-      scenario_name <- paste0("clusters_", k)
-      scenarios[[scenario_name]] <- sampling_order(
-        best_solution_sf, n_clusters = k, method = "spatial",
-        ndvi_weight = ndvi_weight, dem_weight = dem_weight,
-        start_plot = start_plot, verbose = FALSE,
-        output_dir = tempdir(), output_prefix = "temp"
-      )
+    # Handle plots not in any OGU
+    if (any(is.na(ogu_assignments))) {
+      n_unassigned <- sum(is.na(ogu_assignments))
+      msg(paste0("  WARNING: ", n_unassigned, " plots not within any OGU (will be assigned to 'Unassigned')"))
+      ogu_assignments[is.na(ogu_assignments)] <- "Unassigned"
     }
     
-    # Elevation-based if DEM available
-    if (has_dem) {
-      scenarios$elevation_zones <- sampling_order(
-        best_solution_sf, n_clusters = 3, method = "elevation",
-        ndvi_weight = ndvi_weight, dem_weight = dem_weight,
-        start_plot = start_plot, verbose = FALSE,
-        output_dir = tempdir(), output_prefix = "temp"
-      )
-    }
+    # Convert to character for consistency
+    ogu_assignments <- as.character(ogu_assignments)
     
-    msg(paste0("Generated ", length(scenarios), " scenarios: ", paste(names(scenarios), collapse = ", ")))
-    msg("Note: Review scenarios and re-run with chosen n_clusters to save outputs")
-    return(scenarios)
+    # Report OGU sizes
+    ogu_sizes <- table(ogu_assignments)
+    msg("  Plots per OGU:")
+    for (ogu_name in names(ogu_sizes)) {
+      msg(paste0("    ", ogu_name, ": ", ogu_sizes[ogu_name], " plots"))
+    }
   }
   
   # ============================================================================
-  # SECTION 4: CLUSTERING (IF REQUESTED)
-  # ============================================================================
-  
-  cluster_assignments <- rep(1, n_plots)  # Default: all in one cluster
-  
-  if (!is.null(n_clusters) && n_clusters > 1) {
-    msg(paste0("Creating ", n_clusters, " clusters using method: ", method, "..."))
-    
-    if (method == "auto") {
-      method <- if (has_dem) "spatial" else "spatial"  # Default to spatial
-    }
-    
-    if (method == "spatial") {
-      # K-means clustering on coordinates
-      kmeans_result <- stats::kmeans(coords, centers = n_clusters, nstart = 25)
-      cluster_assignments <- kmeans_result$cluster
-      msg(paste0("  Spatial k-means clustering complete"))
-      
-    } else if (method == "elevation") {
-      # Elevation-based clustering using quantiles
-      elevation_breaks <- stats::quantile(dem_data, probs = seq(0, 1, length.out = n_clusters + 1))
-      cluster_assignments <- cut(dem_data, breaks = elevation_breaks, 
-                                 labels = FALSE, include.lowest = TRUE)
-      msg(paste0("  Elevation-based clustering complete"))
-      msg(paste0("  Elevation ranges: ", 
-                 paste(round(elevation_breaks), collapse = " -> "), " m"))
-    }
-    
-    # Report cluster sizes
-    cluster_sizes <- table(cluster_assignments)
-    msg(paste0("  Cluster sizes: ", paste(cluster_sizes, collapse = ", ")))
-  }
-  
-  # ============================================================================
-  # SECTION 5: APPLY MAXIMIN ORDERING
+  # SECTION 4: APPLY MAXIMIN ORDERING (WITHIN OGUs IF PROVIDED)
   # ============================================================================
   
   msg("Applying maximin diversity ordering...")
   
-  if (is.null(n_clusters) || n_clusters == 1) {
-    # No clustering - global ordering
+  # Parse start_plot parameter
+  start_plot_is_named_vector <- is.numeric(start_plot) && !is.null(names(start_plot))
+  
+  # Initialize
+  sampling_order_within_ogu <- integer(n_plots)
+  
+  # Get unique OGUs
+  unique_ogus <- unique(ogu_assignments)
+  
+  for (ogu_name in unique_ogus) {
+    ogu_plots <- which(ogu_assignments == ogu_name)
+    n_ogu_plots <- length(ogu_plots)
     
-    # Determine start plot
-    if (start_plot == "auto") {
-      # Select most environmentally extreme plot (farthest from centroid)
-      env_centroid <- c(mean(ndvi_std), mean(dem_std))
-      distances_from_center <- sqrt((ndvi_std - env_centroid[1])^2 + 
-                                      (dem_std - env_centroid[2])^2)
-      start_idx <- which.max(distances_from_center)
-      msg(paste0("  Auto-selected start plot: #", start_idx, " (most environmentally extreme)"))
-    } else {
-      start_idx <- start_plot
-      msg(paste0("  Starting from plot #", start_idx))
+    if (!is.null(ogus) && length(unique_ogus) > 1) {
+      msg(paste0("  Ordering OGU '", ogu_name, "' (", n_ogu_plots, " plots)..."))
     }
     
-    sampling_order_seq <- maximin_order(env_matrix, start_idx)
+    # Extract submatrix for this OGU
+    ogu_dist_matrix <- env_matrix[ogu_plots, ogu_plots]
     
-  } else {
-    # Clustered ordering
-    sampling_order_seq <- integer(n_plots)
-    current_position <- 1
-    
-    for (cluster_id in sort(unique(cluster_assignments))) {
-      cluster_plots <- which(cluster_assignments == cluster_id)
-      n_cluster_plots <- length(cluster_plots)
-      
-      msg(paste0("  Ordering cluster ", cluster_id, " (", n_cluster_plots, " plots)..."))
-      
-      # Extract submatrix for this cluster
-      cluster_dist_matrix <- env_matrix[cluster_plots, cluster_plots]
-      
-      # Determine start plot within cluster
-      if (start_plot == "auto") {
-        # Most extreme within cluster
-        cluster_ndvi <- ndvi_std[cluster_plots]
-        cluster_dem <- dem_std[cluster_plots]
-        cluster_centroid <- c(mean(cluster_ndvi), mean(cluster_dem))
-        distances_from_center <- sqrt((cluster_ndvi - cluster_centroid[1])^2 + 
-                                        (cluster_dem - cluster_centroid[2])^2)
-        start_idx_local <- which.max(distances_from_center)
-      } else {
-        start_idx_local <- 1  # Start from first plot in cluster
+    # Determine start plot for this OGU
+    if (is.character(start_plot) && start_plot == "auto") {
+      # Most environmentally extreme within OGU
+      ogu_ndvi <- ndvi_std[ogu_plots]
+      ogu_dem <- dem_std[ogu_plots]
+      ogu_centroid <- c(mean(ogu_ndvi), mean(ogu_dem))
+      distances_from_center <- sqrt((ogu_ndvi - ogu_centroid[1])^2 + 
+                                      (ogu_dem - ogu_centroid[2])^2)
+      start_idx_local <- which.max(distances_from_center)
+      if (length(unique_ogus) == 1 || verbose) {
+        msg(paste0("    Starting from Plot #", best_solution_sf$Plot_ID[ogu_plots[start_idx_local]], 
+                   " (most extreme)"))
       }
       
-      # Get ordering within cluster (local indices)
-      local_order <- maximin_order(cluster_dist_matrix, start_idx_local)
+    } else if (is.character(start_plot) && start_plot == "centroid") {
+      # Closest to environmental centroid (most "average" plot)
+      ogu_ndvi <- ndvi_std[ogu_plots]
+      ogu_dem <- dem_std[ogu_plots]
+      ogu_centroid <- c(mean(ogu_ndvi), mean(ogu_dem))
+      distances_from_center <- sqrt((ogu_ndvi - ogu_centroid[1])^2 + 
+                                      (ogu_dem - ogu_centroid[2])^2)
+      start_idx_local <- which.min(distances_from_center)  # Min instead of max!
+      if (length(unique_ogus) == 1 || verbose) {
+        msg(paste0("    Starting from Plot #", best_solution_sf$Plot_ID[ogu_plots[start_idx_local]], 
+                   " (closest to centroid)"))
+      }
       
-      # Convert to global indices and assign sequential order numbers
-      global_indices <- cluster_plots[local_order]
-      sampling_order_seq[current_position:(current_position + n_cluster_plots - 1)] <- global_indices
-      current_position <- current_position + n_cluster_plots
+    } else if (start_plot_is_named_vector) {
+      # Named vector: user specified start plot per OGU
+      if (ogu_name %in% names(start_plot)) {
+        specified_plot <- start_plot[ogu_name]
+        if (specified_plot %in% best_solution_sf$Plot_ID[ogu_plots]) {
+          start_idx_local <- which(best_solution_sf$Plot_ID[ogu_plots] == specified_plot)
+          msg(paste0("    Starting from Plot #", specified_plot, " (user-specified)"))
+        } else {
+          warning("Plot ", specified_plot, " not found in OGU '", ogu_name, "'. Using first plot.")
+          start_idx_local <- 1
+        }
+      } else {
+        warning("No start plot specified for OGU '", ogu_name, "'. Using auto selection.")
+        # Fall back to auto
+        ogu_ndvi <- ndvi_std[ogu_plots]
+        ogu_dem <- dem_std[ogu_plots]
+        ogu_centroid <- c(mean(ogu_ndvi), mean(ogu_dem))
+        distances_from_center <- sqrt((ogu_ndvi - ogu_centroid[1])^2 + 
+                                        (ogu_dem - ogu_centroid[2])^2)
+        start_idx_local <- which.max(distances_from_center)
+      }
+      
+    } else if (is.numeric(start_plot)) {
+      # Single integer: use if plot is in this OGU
+      if (start_plot %in% best_solution_sf$Plot_ID[ogu_plots]) {
+        start_idx_local <- which(best_solution_sf$Plot_ID[ogu_plots] == start_plot)
+        msg(paste0("    Starting from Plot #", start_plot, " (user-specified)"))
+      } else {
+        if (length(unique_ogus) > 1) {
+          # Multi-OGU: use auto for OGUs that don't contain the specified plot
+          ogu_ndvi <- ndvi_std[ogu_plots]
+          ogu_dem <- dem_std[ogu_plots]
+          ogu_centroid <- c(mean(ogu_ndvi), mean(ogu_dem))
+          distances_from_center <- sqrt((ogu_ndvi - ogu_centroid[1])^2 + 
+                                          (ogu_dem - ogu_centroid[2])^2)
+          start_idx_local <- which.max(distances_from_center)
+        } else {
+          warning("Plot ", start_plot, " not found. Using first plot.")
+          start_idx_local <- 1
+        }
+      }
+    } else {
+      # Default to first plot
+      start_idx_local <- 1
     }
+    
+    # Get ordering within OGU (local indices)
+    local_order <- maximin_order(ogu_dist_matrix, start_idx_local)
+    
+    # Assign order numbers (1, 2, 3, ... within each OGU)
+    sampling_order_within_ogu[ogu_plots[local_order]] <- 1:n_ogu_plots
   }
   
   # ============================================================================
-  # SECTION 6: CREATE OUTPUT
+  # SECTION 5: CREATE OUTPUT
   # ============================================================================
   
   msg("Creating output...")
   
-  # Preserve geometry before manipulating data
-  geom_backup <- sf::st_geometry(best_solution_sf)
+  # Add OGU and sampling order to data
+  best_solution_sf$OGU <- ogu_assignments
+  best_solution_sf$sampling_order <- sampling_order_within_ogu
   
-  # Create ordered data frame (drop geometry temporarily)
-  ordered_df <- sf::st_drop_geometry(best_solution_sf)
-  ordered_df$sampling_order <- match(1:n_plots, sampling_order_seq)
-  ordered_df$cluster <- as.factor(cluster_assignments)
-  
-  # Get the order indices
-  order_indices <- order(ordered_df$sampling_order)
-  
-  # Reorder both data and geometry consistently
-  ordered_df <- ordered_df[order_indices, ]
-  geom_ordered <- geom_backup[order_indices]
-  
-  # Reconstruct sf object with ordered geometry
-  ordered_sf <- sf::st_sf(ordered_df, geometry = geom_ordered, crs = sf::st_crs(best_solution_sf))
+  # Create ordered sf object (order by OGU, then by sampling_order)
+  ordered_sf <- best_solution_sf[order(best_solution_sf$OGU, best_solution_sf$sampling_order), ]
   
   # Summary statistics
   summary_df <- data.frame(
     n_plots = n_plots,
-    n_clusters = if (is.null(n_clusters)) 1 else n_clusters,
-    method = method,
+    n_ogus = length(unique_ogus),
+    has_ogus = !is.null(ogus),
     has_dem = has_dem,
     ndvi_weight = ndvi_weight,
     dem_weight = if (has_dem) dem_weight else NA,
@@ -379,7 +426,7 @@ sampling_order <- function(best_solution_sf,
   msg("Done!")
   
   # ============================================================================
-  # SECTION 7: SAVE OUTPUTS
+  # SECTION 6: SAVE OUTPUTS
   # ============================================================================
   
   msg("Saving outputs...")
@@ -394,13 +441,13 @@ sampling_order <- function(best_solution_sf,
   
   # Create field-ready CSV with everything in one file
   field_ready <- data.frame(
-    Plot_ID = ordered_df$Plot_ID,
-    Sampling_Order = ordered_df$sampling_order,
-    Cluster = ordered_df$cluster,
+    Plot_ID = ordered_sf$Plot_ID,
+    OGU = ordered_sf$OGU,
+    Sampling_Order = ordered_sf$sampling_order,
     Latitude = round(coords_wgs84[, 2], 6),
     Longitude = round(coords_wgs84[, 1], 6),
-    NDVI = round(ordered_df$ndvi_mean, 3),
-    Elevation_m = if(has_dem) round(ordered_df$elevation, 1) else NA,
+    NDVI = round(ordered_sf$ndvi_mean, 3),
+    Elevation_m = if(has_dem) round(ordered_sf$elevation, 1) else NA,
     stringsAsFactors = FALSE
   )
   
@@ -415,19 +462,21 @@ sampling_order <- function(best_solution_sf,
   cat("SAMPLING ORDER OPTIMIZATION SUMMARY\n")
   cat("=====================================\n\n")
   cat(paste0("Number of plots: ", n_plots, "\n"))
-  cat(paste0("Number of clusters: ", if (is.null(n_clusters)) 1 else n_clusters, "\n"))
-  cat(paste0("Clustering method: ", method, "\n"))
+  cat(paste0("Number of OGUs: ", length(unique_ogus), "\n"))
+  if (!is.null(ogus)) {
+    cat(paste0("OGU names: ", paste(unique_ogus, collapse = ", "), "\n"))
+  }
   cat(paste0("DEM data used: ", ifelse(has_dem, "Yes", "No"), "\n"))
   cat(paste0("NDVI weight: ", ndvi_weight, "\n"))
   if (has_dem) cat(paste0("DEM weight: ", dem_weight, "\n"))
   cat(paste0("Mean environmental distance: ", round(mean(env_matrix[env_matrix > 0]), 3), "\n\n"))
   
-  if (!is.null(n_clusters) && n_clusters > 1) {
-    cat("CLUSTER INFORMATION:\n")
+  if (!is.null(ogus) && length(unique_ogus) > 1) {
+    cat("OGU INFORMATION:\n")
     cat("-------------------\n")
-    for (cl in sort(unique(cluster_assignments))) {
-      n_in_cluster <- sum(cluster_assignments == cl)
-      cat(paste0("Cluster ", cl, ": ", n_in_cluster, " plots\n"))
+    for (ogu_name in unique_ogus) {
+      n_in_ogu <- sum(ogu_assignments == ogu_name)
+      cat(paste0(ogu_name, ": ", n_in_ogu, " plots\n"))
     }
     cat("\n")
   }
@@ -435,10 +484,10 @@ sampling_order <- function(best_solution_sf,
   cat("FIELD-READY CSV CONTENTS:\n")
   cat("------------------------\n")
   cat("Plot_ID: Original plot identifier\n")
-  cat("Sampling_Order: Optimized sequence (1 = sample first)\n")
-  if (!is.null(n_clusters) && n_clusters > 1) {
-    cat("Cluster: Spatial group (choose which to sample first)\n")
+  if (!is.null(ogus)) {
+    cat("OGU: Operational Geographic Unit (pre-defined study zone)\n")
   }
+  cat("Sampling_Order: Optimized sequence within each OGU (1 = sample first)\n")
   cat("Latitude/Longitude: WGS84 coordinates for GPS\n")
   cat("NDVI: Vegetation index value\n")
   if (has_dem) cat("Elevation_m: Elevation in meters\n")
@@ -446,7 +495,7 @@ sampling_order <- function(best_solution_sf,
   
   cat("FIELD INSTRUCTIONS:\n")
   cat("------------------\n")
-  if (is.null(n_clusters) || n_clusters == 1) {
+  if (is.null(ogus) || length(unique_ogus) == 1) {
     cat("1. Open the field-ready CSV on your device\n")
     cat("2. Sort by Sampling_Order column\n")
     cat("3. Navigate to the Lat/Lon of the first plot\n")
@@ -455,11 +504,13 @@ sampling_order <- function(best_solution_sf,
     cat("If you run out of time/budget, you've still sampled across the full gradient.\n")
   } else {
     cat("1. Open the field-ready CSV on your device\n")
-    cat("2. Choose which Cluster to sample first (based on accessibility)\n")
-    cat("3. Filter to that cluster and sort by Sampling_Order\n")
-    cat("4. Navigate to plots using Lat/Lon in order\n")
-    cat("5. When cluster complete, move to next cluster\n")
-    cat("\nEach cluster is ordered to maximize diversity within that spatial group.\n")
+    cat("2. Choose which OGU to sample first (based on accessibility, weather, permits)\n")
+    cat("3. Filter to that OGU and sort by Sampling_Order\n")
+    cat("4. Navigate to plots using Lat/Lon in order (1, 2, 3, ...)\n")
+    cat("5. When OGU complete, move to next OGU\n")
+    cat("\nEach OGU is ordered independently to maximize diversity within that zone.\n")
+    cat("OGUs are typically defined based on ecological zones, accessibility,\n")
+    cat("management units, or other a priori knowledge of the study area.\n")
   }
   
   cat("\nOUTPUT FILES:\n")
@@ -472,7 +523,7 @@ sampling_order <- function(best_solution_sf,
   msg(paste0("All files saved to: ", output_dir))
   
   # ============================================================================
-  # SECTION 8: RETURN
+  # SECTION 7: RETURN
   # ============================================================================
   
   return(list(
