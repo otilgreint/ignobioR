@@ -296,3 +296,68 @@ cleanup_temp_rasters <- function(file_paths, verbose = TRUE) {
   
   return(n_deleted == n_files)
 }
+
+
+#' @title Identify New Records Between Two Datasets (Internal)
+#'
+#' @description
+#' Internal function that identifies records present in updated dataset but not
+#' in initial dataset. Matches records by Taxon, coordinates, and year.
+#'
+#' @param data_initial Initial floristic dataset
+#' @param data_updated Updated floristic dataset
+#'
+#' @return Data frame containing only new records (rows in updated but not in initial)
+#'
+#' @keywords internal
+#' @noRd
+
+identify_new_records <- function(data_initial, data_updated) {
+  
+  # Convert sf to data.frame if needed (keep only relevant columns)
+  cols_to_match <- c("Taxon", "Long", "Lat", "uncertainty", "year")
+  
+  if (inherits(data_initial, "sf")) {
+    initial_df <- as.data.frame(data_initial)[, cols_to_match]
+  } else {
+    initial_df <- data_initial[, cols_to_match]
+  }
+  
+  if (inherits(data_updated, "sf")) {
+    updated_df <- as.data.frame(data_updated)[, cols_to_match]
+  } else {
+    updated_df <- data_updated[, cols_to_match]
+  }
+  
+  # Create unique identifiers for matching
+  # Round coordinates to avoid floating point issues
+  initial_df$match_id <- paste(
+    initial_df$Taxon,
+    round(initial_df$Long, 6),
+    round(initial_df$Lat, 6),
+    initial_df$uncertainty,
+    initial_df$year,
+    sep = "_"
+  )
+  
+  updated_df$match_id <- paste(
+    updated_df$Taxon,
+    round(updated_df$Long, 6),
+    round(updated_df$Lat, 6),
+    updated_df$uncertainty,
+    updated_df$year,
+    sep = "_"
+  )
+  
+  # Identify new records (in updated but not in initial)
+  new_indices <- !(updated_df$match_id %in% initial_df$match_id)
+  
+  # Return new records with all original columns from data_updated
+  if (inherits(data_updated, "sf")) {
+    data_flor_new <- data_updated[new_indices, ]
+  } else {
+    data_flor_new <- data_updated[new_indices, ]
+  }
+  
+  return(data_flor_new)
+}
