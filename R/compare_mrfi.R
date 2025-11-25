@@ -549,7 +549,7 @@ compare_mrfi <- function(
       mid = "white",
       high = "#1A9850",
       midpoint = 0,
-      limits = c(-improvement_max, improvement_max),
+      limits = c(-improvement_limit, improvement_limit),
       breaks = improvement_breaks,
       labels = round(improvement_breaks, 1),
       name = "ΔIRFI",
