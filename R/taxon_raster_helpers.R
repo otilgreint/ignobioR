@@ -24,7 +24,7 @@
 #' @noRd
 
 age_taxon_raster <- function(
-    taxon_file_or_raster,
+    taxon_file_or_raster,  # This parameter becomes unused
     taxon_obs,
     year_from,
     year_to,
@@ -36,66 +36,50 @@ age_taxon_raster <- function(
     output_path = NULL
 ) {
   
-  # --- SAFETY CHECK: Empty Observations ---
+  # Safety: Empty observations
   if (nrow(taxon_obs) == 0) {
-    # If no obs, return empty raster (zeros)
     aged_raster <- template_raster
     terra::values(aged_raster) <- 0
-    
     if (save_to_file) {
-      if (is.null(output_path)) stop("output_path required when save_to_file = TRUE")
       terra::writeRaster(aged_raster, output_path, overwrite = TRUE)
       return(output_path)
     }
     return(aged_raster)
   }
   
-  # --- SAFETY CHECK: Remove records with NA Uncertainty ---
+  # Safety: Remove NA uncertainty
   if (any(is.na(taxon_obs$uncertainty))) {
     n_removed <- sum(is.na(taxon_obs$uncertainty))
-    warning(paste0("Removing ", n_removed, " observations with NA uncertainty for taxon aging"))
+    warning(paste0("Removing ", n_removed, " observations with NA uncertainty"))
     taxon_obs <- taxon_obs[!is.na(taxon_obs$uncertainty), ]
   }
   
-  # Recalculate temporal scores (New Year)
-  # Score = (1 - decay)^(TimeElapsed)
-  # Using formula: S_t = (1 - tau/100)^( (Year_Target - Year_Obs) / 100 )
+  # === KEY FIX: Recalculate st_ignorance with aged temporal scores ===
+  taxon_obs$temporal_score_aged <- (1 - tau/100)^((year_to - taxon_obs$year) / 100)
+  taxon_obs$st_ignorance <- taxon_obs$spatial_score * taxon_obs$temporal_score_aged
   
-  taxon_obs$temporal_score_new <- 
-    (1 - tau/100)^((year_to - taxon_obs$year) / 100)
-  
-  # Update spatio-temporal ignorance
-  taxon_obs$time_score <- taxon_obs$temporal_score_new
-  taxon_obs$st_ignorance <- taxon_obs$spatial_score * taxon_obs$time_score
-  
-  # Recreate buffers (sf object)
+  # Recreate buffers
   buffers_sf <- sf::st_buffer(taxon_obs, dist = taxon_obs$uncertainty)
   
-  # Recalculate raster with new temporal scores
+  # Rasterize with UPDATED st_ignorance
   if (use_coverage_weighting) {
-    # Coverage-weighted approach
     aged_raster <- template_raster
     terra::values(aged_raster) <- 0
     
-    # FIX: Use seq_len() to handle 0-row case gracefully
     for (j in seq_len(nrow(taxon_obs))) {
       single_buf <- sf::st_sf(geometry = sf::st_geometry(buffers_sf[j, ]))
-      
-      # Rasterize single buffer
       coverage_r <- terra::rasterize(terra::vect(single_buf), 
                                      template_raster, cover = TRUE)
       coverage_r[is.na(coverage_r)] <- 0
       
-      # Weight by ignorance score
+      # NOW using updated st_ignorance!
       weighted_r <- coverage_r * taxon_obs$st_ignorance[j]
-      
-      # Update Max Ignorance
       aged_raster <- max(aged_raster, weighted_r, na.rm = TRUE)
     }
   } else {
-    # Binary touch approach (Optimized vectorization)
+    # Binary approach
     bufs_clean <- sf::st_sf(
-      st_ignorance = taxon_obs$st_ignorance,
+      st_ignorance = taxon_obs$st_ignorance,  # Updated values
       geometry = sf::st_geometry(buffers_sf)
     )
     
@@ -111,9 +95,6 @@ age_taxon_raster <- function(
   
   # Save or return
   if (save_to_file) {
-    if (is.null(output_path)) {
-      stop("output_path required when save_to_file = TRUE")
-    }
     terra::writeRaster(aged_raster, output_path, overwrite = TRUE)
     return(output_path)
   } else {
