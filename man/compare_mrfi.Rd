@@ -26,6 +26,7 @@ compare_mrfi(
 )
 }
 \arguments{
+<<<<<<< HEAD
 \item{data_flor_initial}{Data frame with initial floristic data. Must have columns: Taxon, Long, Lat, uncertainty, year.}
 
 \item{data_flor_updated}{Data frame with updated/complete floristic data. Must have columns: Taxon, Long, Lat, uncertainty, year.}
@@ -33,6 +34,17 @@ compare_mrfi(
 \item{site}{An sf object representing the study area.}
 
 \item{tau}{Numeric. Temporal decay parameter (percent taxa loss per 100 years).}
+=======
+\item{data_flor_initial}{Data frame with initial floristic data. Must have
+columns: Taxon, Long, Lat, uncertainty, year.}
+
+\item{data_flor_updated}{Data frame with updated/complete floristic data.
+Must have columns: Taxon, Long, Lat, uncertainty, year.}
+
+\item{site}{An `sf` object representing the study area.}
+
+\item{tau}{Numeric. Temporal decay parameter (% taxa loss per 100 years).}
+>>>>>>> 9d6153617b215062451e987f0669f906bff0a505
 
 \item{cellsize}{Numeric. Raster cell size in meters.}
 
@@ -40,15 +52,25 @@ compare_mrfi(
 
 \item{year_updated}{Numeric. Year of updated survey (default: extracted from data).}
 
+<<<<<<< HEAD
 \item{excl_areas}{Optional sf object for exclusion areas.}
+=======
+\item{excl_areas}{Optional `sf` object for exclusion areas.}
+>>>>>>> 9d6153617b215062451e987f0669f906bff0a505
 
 \item{CRS.new}{Numeric EPSG code for projected CRS (default = 3035).}
 
 \item{target_quantile}{Numeric. Quantile for IRFI categorization (default = 0.75).}
 
+<<<<<<< HEAD
 \item{output_dir}{Character. Directory for output files (default = working directory + "/output").}
 
 \item{output_prefix}{Character. Filename prefix (default = "MRFI_comparison").}
+=======
+\item{output_dir}{Directory for output files (default = working directory + "/output").}
+
+\item{output_prefix}{Filename prefix (default = "MRFI_comparison").}
+>>>>>>> 9d6153617b215062451e987f0669f906bff0a505
 
 \item{verbose}{Logical. Print progress messages (default = TRUE).}
 
@@ -60,6 +82,7 @@ compare_mrfi(
 
 \item{use_coverage_weighting}{Logical. Use coverage-weighted rasterization (default = TRUE).}
 
+<<<<<<< HEAD
 \item{...}{Additional parameters passed to ignorance_map().}
 }
 \value{
@@ -69,6 +92,22 @@ mrfi_updated (updated MRFI output), delta_irfi_raster (absolute change), efficie
 (efficiency-weighted), richness_gain_raster (taxa added), summary (statistics data frame), 
 richness_comparison (richness statistics), targeting_efficiency (targeting metrics), 
 and quadrant_analysis (quadrant breakdown).
+=======
+\item{...}{Additional parameters passed to \code{ignorance_map()}.}
+}
+\value{
+A list with class "mrfi_comparison":
+\itemize{
+  \item{\code{mrfi_initial}}{Initial MRFI output (ignorance_map object)}
+  \item{\code{mrfi_updated}}{Updated MRFI output (incremental calculation)}
+  \item{\code{delta_irfi_raster}}{SpatRaster of IRFI changes (negative = reduction)}
+  \item{\code{richness_gain_raster}}{SpatRaster of richness gains}
+  \item{\code{summary}}{Data frame with comparison statistics}
+  \item{\code{richness_comparison}}{Data frame with richness statistics}
+  \item{\code{targeting_efficiency}}{Data frame with targeting metrics}
+  \item{\code{quadrant_analysis}}{Data frame with quadrant breakdown}
+}
+>>>>>>> 9d6153617b215062451e987f0669f906bff0a505
 }
 \description{
 Compares initial and updated floristic surveys using incremental MRFI calculation.
@@ -76,14 +115,25 @@ The updated MRFI is calculated as an UPDATE of the baseline (maintaining fixed
 maximum ignorance) rather than independent recalculation, ensuring comparable
 scales even when new taxa are discovered.
 
+<<<<<<< HEAD
 Visualization focuses on KNOWLEDGE GAINED with four complementary metrics:
 dIRFI (absolute change), Efficiency (% change), Discovery Value (ignorance-weighted),
 and Performance Score (efficiency-weighted, normalized by potential).
+=======
+Visualization focuses on KNOWLEDGE GAINED:
+\itemize{
+  \item{Page 1: Initial MRFI + IRFI Change (negative = knowledge gained)}
+  \item{Page 2: Initial Richness + Richness Gain}
+  \item{Page 3: Richness gain by IRFI category + Quadrant analysis}
+  \item{Page 4: Summary statistics}
+}
+>>>>>>> 9d6153617b215062451e987f0669f906bff0a505
 
 This function implements the evaluation phase (Q3) of the Next Generation
 Floristics workflow (D'Antraccoli et al. 2022).
 }
 \details{
+<<<<<<< HEAD
 Metrics calculated: dIRFI = IRFI_updated - IRFI_initial (negative = improvement), 
 Efficiency = (-dIRFI / IRFI_initial) × 100, Discovery Value = -dIRFI × (IRFI_initial / mean_IRFI), 
 Performance Score = -dIRFI / mean_IRFI (normalized by potential).
@@ -91,4 +141,32 @@ Performance Score = -dIRFI / mean_IRFI (normalized by potential).
 PDF Output (5 pages, A4 landscape): Page 1 (Initial MRFI + Performance Score), 
 Page 2 (Initial Richness + Richness Gain), Page 3 (Richness by IRFI + Performance scatterplot), 
 Page 4 (Summary statistics), Page 5 (Metric comparison: all four metrics side-by-side).
+=======
+**Incremental MRFI Calculation:**
+
+The updated MRFI is calculated as:
+\code{IRFI_updated = max_ignorance_T1 - Σ(aged_baseline + new_observations)}
+
+Where:
+\itemize{
+  \item{aged_baseline: T1 observations with temporal scores updated to T2}
+  \item{new_observations: New observations between T1 and T2}
+  \item{max_ignorance_T1: Fixed reference from initial survey (constant)}
+}
+
+**Sign Convention (dIRFI):**
+\itemize{
+  \item{dIRFI = IRFI_updated - IRFI_initial}
+  \item{Negative values indicate knowledge gain (ignorance reduction)}
+  \item{Positive values indicate knowledge loss (ignorance increase from temporal decay)}
+}
+
+**PDF Output (4 pages, A4 landscape):**
+\itemize{
+  \item{Page 1: Initial MRFI (left) + IRFI Change map (right, negative = gain)}
+  \item{Page 2: Initial Richness (left) + Richness Gain map (right)}
+  \item{Page 3: Richness by IRFI boxplot (left) + Quadrant analysis (right)}
+  \item{Page 4: Summary statistics table}
+}
+>>>>>>> 9d6153617b215062451e987f0669f906bff0a505
 }

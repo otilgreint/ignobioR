@@ -214,9 +214,9 @@ compare_mrfi <- function(
   irfi_T1_values <- terra::values(mrfi_T1)
   irfi_T1_values <- irfi_T1_values[!is.na(irfi_T1_values)]
   
-  # Calculate 75th percentile threshold
+  # Calculate Q75 threshold
   q75_T1 <- quantile(irfi_T1_values, target_quantile, na.rm = TRUE)
-  msg(paste0("  High-ignorance (75th percentile (Q4) threshold): ", target_quantile * 100, round(q75_T1, 2)))
+  msg(paste0("  High-ignorance threshold (Q", target_quantile * 100, "): ", round(q75_T1, 2)))
   
   efficiency_raster <- mrfi_T1
   
@@ -253,14 +253,14 @@ compare_mrfi <- function(
   eff_total <- sum(!is.na(efficiency_class))
   eff_pct <- (eff_counts / eff_total) * 100
   
-  msg(paste0("  Optimal (sampled Q4 cells): ",
+  msg(paste0("  Optimal (Q4 + sampled): ",
              eff_counts["1"], " (", round(eff_pct["1"], 1), "%)"))
-  msg(paste0("  Additional (sampled Q1-Q3 cells): ",
-             eff_counts["4"], " (", round(eff_pct["4"], 1), "%)"))
-  msg(paste0("  Stable (not sampled Q1-Q3 cells): ",
-             eff_counts["3"], " (", round(eff_pct["3"], 1), "%)"))
-  msg(paste0("  Missed (not sampled Q4 cells): ",
+  msg(paste0("  Missed (Q4 + not sampled): ",
              eff_counts["2"], " (", round(eff_pct["2"], 1), "%) PRIORITY"))
+  msg(paste0("  Stable (Q1-Q3 + not sampled): ",
+             eff_counts["3"], " (", round(eff_pct["3"], 1), "%)"))
+  msg(paste0("  Additional (Q1-Q3 + sampled): ",
+             eff_counts["4"], " (", round(eff_pct["4"], 1), "%)"))
   
   # ============================================================================
   # SECTION 8: CALCULATE DISTRIBUTION METRICS
@@ -300,13 +300,13 @@ compare_mrfi <- function(
       paste0(round(gini_change_pct, 1), "%"),
       paste0(round(cv_change_pct, 1), "%"),
       paste0(round(iqr_change_pct, 1), "%"),
-      paste0(ifelse(n_q4_change >= 0, "+", ""), n_q4_change) 
+      paste0(ifelse(n_q4_change >= 0, "+", ""), n_q4_change)
     ),
     Interpretation = c(
       ifelse(gini_change_pct < 0, "More even", "Less even"),
       ifelse(cv_change_pct < 0, "Less variable", "More variable"),
       ifelse(iqr_change_pct < 0, "Compressed", "Expanded"),
-      ifelse(n_q4_change < 0, "Fewer high-IRFI", "More high-IRFI") 
+      ifelse(n_q4_change < 0, "Fewer high-IRFI", "More high-IRFI")
     )
   )
   
@@ -565,7 +565,7 @@ compare_mrfi <- function(
       )
     ) +
     ggplot2::ggtitle("Targeting Efficiency") +
-    ggplot2::labs(subtitle = paste0("75th percentile (Q4) threshold: ", round(q75_T1, 1))) +
+    ggplot2::labs(subtitle = paste0("Q75 threshold: ", round(q75_T1, 1))) +
     ggplot2::xlab("Longitude") + ggplot2::ylab("Latitude") +
     ggplot2::theme(legend.position = "right")
   p2_right <- add_boundaries(p2_right)
@@ -761,14 +761,14 @@ compare_mrfi <- function(
         "Page 4: Summary Statistics",
         gp = grid::gpar(fontsize = 14, fontface = "bold")
       ),
-      gridExtra::tableGrob(summary_df)  # Simplified - same as ignorance_map()
+      gridExtra::tableGrob(summary_df)
     )
   )
   
   grDevices::dev.off()
   
   msg(paste0("PDF saved: ", pdf_path))
-  msg(paste0("Dark blue (Optimal): ", eff_counts["1"], " cells with adequate sampling"))
+  msg(paste0("Dark blue (Optimal): ", eff_counts["1"], " cells with sampling"))
   msg(paste0("Orange (Missed): ", eff_counts["2"], " cells needing attention"))
   
   # ============================================================================
