@@ -460,8 +460,7 @@ sampleboost <- function(ndvi, ignorance, site, excl_areas = NULL,
     
     coords <- sf::st_coordinates(points_sf)
     dist_matrix <- as.matrix(stats::dist(coords))
-    diag(dist_matrix) <- Inf
-    mean_nn_dist[i] <- mean(apply(dist_matrix, 1, min))
+    mean_nn_dist[i] <- mean(dist_matrix[lower.tri(dist_matrix)])
     
     permutation_results[[i]] <- data.frame(
       x = coords[,1], y = coords[,2],
