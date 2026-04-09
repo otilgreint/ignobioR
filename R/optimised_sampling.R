@@ -470,7 +470,7 @@ sampleboost <- function(ndvi, ignorance, site, excl_areas = NULL,
       elevation_within_var = if(use_dem) dem_within_vars else rep(0, nrow(points_sf)),
       has_intersection = has_intersection[i], permutation_id = i,
       stringsAsFactors = FALSE
-    )
+    ) 
     utils::setTxtProgressBar(pb, i)
   }
   close(pb)
