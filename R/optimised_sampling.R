@@ -526,8 +526,14 @@ sampleboost <- function(ndvi, ignorance, site, excl_areas = NULL,
   aggregated_scores$spatial_norm <- normalize(aggregated_scores$spatial_weighted)
   aggregated_scores$dem_norm <- if(use_dem) normalize(aggregated_scores$dem_weighted) else 0
   
+  aggregated_scores$ndvi_norm <- if(ndvi.weight == 0) 0 else normalize(aggregated_scores$ndvi_weighted)
+  aggregated_scores$igno_norm <- if(igno.weight == 0) 0 else normalize(aggregated_scores$igno_weighted)
+  aggregated_scores$spatial_norm <- if(dist.weight == 0) 0 else normalize(aggregated_scores$spatial_weighted)
+  aggregated_scores$dem_norm <- if(use_dem && dem.weight > 0) normalize(aggregated_scores$dem_weighted) else 0
+  
   aggregated_scores$final_score <- aggregated_scores$ndvi_norm + aggregated_scores$igno_norm + 
     aggregated_scores$spatial_norm + aggregated_scores$dem_norm
+  
   
   # ============================================================================
   # SECTION 5: SELECT BEST SOLUTION
