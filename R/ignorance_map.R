@@ -65,16 +65,6 @@
 #'   \item{Page 3}{ Data diagnostics (temporal + spatial uncertainty histograms)}
 #'   \item{Page 4}{ Summary statistics table}
 #' }
-#' 
-#' Both quantile and continuous scales use 9 colors from the Spectral palette.
-#' Quantile maps use 8 quantiles (octiles) for optimal class discrimination.
-#' 
-#' Edge Effect Handling:
-#' The algorithm automatically includes points outside the study area if their 
-#' uncertainty buffers intersect the site boundary. This means edge effects are 
-#' naturally handled without requiring a site buffer. The template raster is 
-#' automatically expanded beyond the site boundary to ensure complete coverage 
-#' of all relevant cells.
 #'
 #' @importFrom sf st_as_sf st_make_valid st_crs st_transform st_buffer st_intersects st_intersection st_union st_bbox st_coordinates st_geometry st_difference st_sf
 #' @importFrom terra rast values mask crop vect rasterize extract ext global writeRaster app
@@ -446,7 +436,7 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
     
     warning(paste0("Cell size (", cellsize, "m) is very large for this study area. ",
                    "Expected ~", round(n_cells_approx), " cells covering ", 
-                   round(site_area / 1e6, 2), " km². ",
+                   round(site_area / 1e6, 2), " km^2. ",
                    "Consider reducing cellsize to improve spatial resolution. ",
                    "Suggested maximum: ", round(min_dim / 10), "m (10% of smallest dimension)."))
   }
@@ -595,10 +585,10 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
   # ============================================================================
   
   if (has_exclusions) {
-    msg("Removing cells that are ≥95% within excluded areas...")
+    msg("Removing cells that are >=95% within excluded areas...")
     excl_mask_r <- terra::rasterize(terra::vect(excl_proj), r_template, cover = TRUE)
     
-    # Identify cells where exclusion coverage is ≥95%
+    # Identify cells where exclusion coverage is >=95%
     cells_to_remove <- !is.na(excl_mask_r) & excl_mask_r >= 0.95
     
     # Remove only those cells
@@ -606,7 +596,7 @@ ignorance_map <- function(data_flor, site, year_study = NULL, excl_areas = NULL,
     rich_final[cells_to_remove] <- NA
     
     n_removed <- sum(terra::values(cells_to_remove), na.rm = TRUE)
-    msg(paste0("  Removed ", n_removed, " cells (≥95% in exclusion areas)"))
+    msg(paste0("  Removed ", n_removed, " cells (>=95% in exclusion areas)"))
   }
   
   # ============================================================================
